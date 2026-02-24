@@ -46,15 +46,32 @@ sosmed/
 ### Installation
 
 ```bash
+# Install PyTorch with CUDA 12.4 support
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Install other dependencies
+pip install -r requirements.txt
+
 # Clone or navigate to the project
 cd sosmed
 
-# Create a virtual environment (optional but recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Create and activate a conda environment
+conda create -n ai_clipper python=3.11 -y
+conda activate ai_clipper
+
+# Install CUDA-enabled PyTorch (recommended for GPU)
+conda install -c pytorch -c nvidia pytorch torchvision torchaudio pytorch-cuda=12.4
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+#### CPU-only alternative
+
+If you do not have an NVIDIA GPU, install the CPU build instead:
+
+```bash
+conda install -c pytorch pytorch torchvision torchaudio
 ```
 
 ### Configuration
@@ -205,6 +222,9 @@ python main.py video.mp4 --model large-v3
 - **Model Size**: Use `--model base` for faster processing, `--model large-v3` for better accuracy
 
 ## Troubleshooting
+
+**Issue**: `ImportError: ... libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent`  
+→ Reinstall PyTorch via conda with CUDA support (see Installation)
 
 **Issue**: Slow transcription  
 → Install CUDA or use a smaller model with `--model base`

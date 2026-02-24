@@ -97,7 +97,18 @@ def transcribe(
     compute_type = _resolve_compute_type(device, compute_type)
 
     from .utils import BOLD, RESET
-    log("INFO", f"Loading whisper {BOLD}{model_size}{RESET} on {device.upper()} ({compute_type})")
+    
+    # Check if model is cached
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache_info = scan_cache_dir()
+        model_repo = f"Systran/faster-whisper-{model_size}"
+        cached = any(model_repo in repo.repo_id for repo in cache_info.repos)
+        cache_status = "(from cache)" if cached else "(downloading...)"
+    except Exception:
+        cache_status = ""
+    
+    log("INFO", f"Loading whisper {BOLD}{model_size}{RESET} on {device.upper()} ({compute_type}) {cache_status}")
     t0 = time.time()
     model = WhisperModel(
         model_size,

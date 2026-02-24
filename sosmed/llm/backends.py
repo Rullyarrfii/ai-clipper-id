@@ -11,27 +11,73 @@ from typing import Any
 from ..utils import log, BOLD, RESET, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_BASE
 
 
-def _parse_llm_json(raw: str) -> list[dict[str, Any]]:
-    """Robustly extract a JSON array from LLM text."""
+def _parse_llm_json(raw: str) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Robustly extract a JSON array from LLM text.
+    
+    Returns:
+        (parsed_data, success) — success=False if parsing failed
+    """
     # Strip markdown code fences
     cleaned = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
     # Try direct parse
     try:
         data = json.loads(cleaned)
         if isinstance(data, list):
-            return data
+            return data, True
         # Wrapped in an object — find the array
         for v in data.values():
             if isinstance(v, list):
-                return v
-        return []
+                return v, True
+        return [], True
     except json.JSONDecodeError:
         pass
     # Last resort: find first [ ... ] block
     m = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if m:
-        return json.loads(m.group())
-    log("ERROR", "Could not parse JSON from LLM response")
+        try:
+            return json.loads(m.group()), True
+        except json.JSONDecodeError:
+            pass
+    return [], False
+
+
+def _retry_on_json_failure(
+    api_call_fn,
+    system: str,
+    user: str,
+    max_retries: int = 2,
+) -> list[dict[str, Any]]:
+    """
+    Retry LLM call with modified prompts if JSON parsing fails.
+    
+    Args:
+        api_call_fn: Callable that takes (system, user) and returns raw response text
+        system: System prompt
+        user: User prompt
+        max_retries: Number of retries (1 = no retry, just one attempt)
+    
+    Returns:
+        Parsed clips, or empty list if all attempts fail
+    """
+    retry_prompts = [
+        "",  # First attempt: original prompt
+        "\n\n[RETRY: Please respond with ONLY a valid JSON array, no other text. Start with [ and end with ].]",
+        "\n\n[RETRY 2: Output ONLY valid JSON array. Example format: [{\"start\": 0, \"end\": 10, \"reason\": \"...\"}, ...].]",
+    ]
+    
+    for attempt in range(min(max_retries, len(retry_prompts))):
+        modified_user = user + retry_prompts[attempt]
+        raw = api_call_fn(system, modified_user)
+        clips, success = _parse_llm_json(raw)
+        
+        if success:
+            return clips
+        
+        if attempt < max_retries - 1:
+            log("WARN", f"JSON parse failed (attempt {attempt + 1}), retrying with modified prompt...")
+    
+    log("ERROR", "Could not parse JSON from LLM response after retries")
     return []
 
 
@@ -42,7 +88,7 @@ def openrouter(
     model: str = DEFAULT_OPENROUTER_MODEL,
     base_url: str = DEFAULT_OPENROUTER_BASE,
 ) -> list[dict[str, Any]]:
-    """Call OpenRouter (OpenAI-compatible API). Default: free model."""
+    """Call OpenRouter (OpenAI-compatible API). Default: free model. With retry on JSON parse failure."""
     try:
         from openai import OpenAI
     except ImportError:
@@ -50,29 +96,32 @@ def openrouter(
         sys.exit(1)
 
     log("LLM", f"OpenRouter → {BOLD}{model}{RESET}")
-    client = OpenAI(api_key=api_key, base_url=base_url)
-
-    resp = client.chat.completions.create(
-        model=model,
-        max_tokens=8192,
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        extra_headers={
-            "HTTP-Referer": "https://github.com/ai-video-clipper",
-            "X-Title": "AI Video Clipper",
-        },
-    )
-    raw = resp.choices[0].message.content or ""
-    clips = _parse_llm_json(raw)
+    
+    def _call_openrouter(sys_prompt: str, user_prompt: str) -> str:
+        """Internal function that makes the actual API call and returns raw response."""
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=8192,
+            temperature=0.3,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            extra_headers={
+                "HTTP-Referer": "https://github.com/ai-video-clipper",
+                "X-Title": "AI Video Clipper",
+            },
+        )
+        return resp.choices[0].message.content or ""
+    
+    clips = _retry_on_json_failure(_call_openrouter, system, user, max_retries=2)
     log("OK", f"OpenRouter returned {len(clips)} clips")
     return clips
 
 
 def anthropic(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
-    """Call Anthropic Claude."""
+    """Call Anthropic Claude. With retry on JSON parse failure."""
     try:
         import anthropic
     except ImportError:
@@ -80,21 +129,26 @@ def anthropic(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
         sys.exit(1)
 
     log("LLM", f"Anthropic → {BOLD}claude-sonnet-4-20250514{RESET}")
-    client = anthropic.Anthropic(api_key=api_key)
-    resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8192,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    raw = resp.content[0].text
-    clips = _parse_llm_json(raw)
+    
+    def _call_anthropic(sys_prompt: str, user_prompt: str) -> str:
+        """Internal function that makes the actual API call and returns raw response."""
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8192,
+            system=sys_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        return resp.content[0].text
+    
+    clips = _retry_on_json_failure(_call_anthropic, system, user, max_retries=2)
     log("OK", f"Anthropic returned {len(clips)} clips")
     return clips
 
 
+
 def openai(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
-    """Call OpenAI GPT-4o."""
+    """Call OpenAI GPT-4o. With retry on JSON parse failure."""
     try:
         from openai import OpenAI
     except ImportError:
@@ -102,23 +156,28 @@ def openai(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
         sys.exit(1)
 
     log("LLM", f"OpenAI → {BOLD}gpt-4o{RESET}")
-    client = OpenAI(api_key=api_key)
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    raw = resp.choices[0].message.content or ""
-    clips = _parse_llm_json(raw)
+    
+    def _call_openai(sys_prompt: str, user_prompt: str) -> str:
+        """Internal function that makes the actual API call and returns raw response."""
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return resp.choices[0].message.content or ""
+    
+    clips = _retry_on_json_failure(_call_openai, system, user, max_retries=2)
     log("OK", f"OpenAI returned {len(clips)} clips")
     return clips
 
 
+
 def ollama(system: str, user: str) -> list[dict[str, Any]]:
-    """Call local Ollama instance."""
+    """Call local Ollama instance. With retry on JSON parse failure."""
     try:
         import requests
     except ImportError:
@@ -127,23 +186,28 @@ def ollama(system: str, user: str) -> list[dict[str, Any]]:
 
     model = os.getenv("OLLAMA_MODEL", "llama3.1")
     log("LLM", f"Ollama (local) → {BOLD}{model}{RESET}")
-    resp = requests.post(
-        "http://localhost:11434/api/chat",
-        json={
-            "model": model,
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        },
-        timeout=300,
-    )
-    resp.raise_for_status()
-    raw = resp.json()["message"]["content"]
-    clips = _parse_llm_json(raw)
+    
+    def _call_ollama(sys_prompt: str, user_prompt: str) -> str:
+        """Internal function that makes the actual API call and returns raw response."""
+        resp = requests.post(
+            "http://localhost:11434/api/chat",
+            json={
+                "model": model,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+    
+    clips = _retry_on_json_failure(_call_ollama, system, user, max_retries=2)
     log("OK", f"Ollama returned {len(clips)} clips")
     return clips
+
 
 
 def call_llm(

@@ -110,19 +110,19 @@ def main() -> None:
 
     # ── Example mode: skip to extraction ─────────────────────────────────
     if args.example:
-        # Load clips from JSON file
-        clips_file = Path(args.clips_file)
+        if not video.exists():
+            log("ERROR", f"File not found: {video}")
+            sys.exit(1)
+        
+        # Load clips from JSON file in video subdirectory
+        output_dir = Path(args.output) / video.stem
+        clips_file = output_dir / "clips.json"
         if not clips_file.exists():
             log("ERROR", f"Clips file not found: {clips_file}")
             sys.exit(1)
         
         all_clips = json.loads(clips_file.read_text())
         clips = all_clips[:args.example_count]  # Take only the first N clips
-        
-        output_dir = Path(args.output)
-        if not video.exists():
-            log("ERROR", f"File not found: {video}")
-            sys.exit(1)
         
         print(f"\n{BOLD}{CYAN}{'═' * 50}")
         print(f"   AI Video Clipper — Example Mode (Testing)")
@@ -223,7 +223,7 @@ def main() -> None:
         log("ERROR", f"File not found: {video}")
         sys.exit(1)
 
-    output_dir = Path(args.output)
+    output_dir = Path(args.output) / video.stem
 
     print(f"\n{BOLD}{CYAN}{'═' * 50}")
     print(f"   AI Video Clipper — Indonesian-optimized")

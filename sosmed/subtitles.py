@@ -1,8 +1,9 @@
 """
-TikTok-style subtitle generation (ASS format).
+Subtitle generation (ASS format) — clean, non-overlapping, lower-third.
 
 Generates word-by-word highlighted subtitles with karaoke fill effect.
-Big bold text, white → yellow highlight, black outline.
+Bold white text with yellow highlight sweep, black outline, positioned
+at the bottom of the frame with no temporal overlap between lines.
 """
 
 from typing import Any
@@ -15,15 +16,15 @@ def _rgb_to_ass(r: int, g: int, b: int, a: int = 0) -> str:
     return f"&H{a:02X}{b:02X}{g:02X}{r:02X}"
 
 
-# Default TikTok-style colors
-COLOR_HIGHLIGHT = _rgb_to_ass(255, 225, 53)     # Yellow #FFE135 (spoken word)
-COLOR_NORMAL    = _rgb_to_ass(255, 255, 255)     # White (upcoming words)
-COLOR_OUTLINE   = _rgb_to_ass(0, 0, 0)           # Black outline
-COLOR_SHADOW    = _rgb_to_ass(0, 0, 0, 128)      # Semi-transparent shadow
+COLOR_HIGHLIGHT = _rgb_to_ass(255, 225, 53)      # Yellow (spoken word)
+COLOR_NORMAL    = _rgb_to_ass(255, 255, 255)      # White (upcoming words)
+COLOR_OUTLINE   = _rgb_to_ass(0, 0, 0)            # Black outline
+COLOR_SHADOW    = _rgb_to_ass(0, 0, 0, 80)        # Subtle shadow
 
 
 def _seconds_to_ass_time(seconds: float) -> str:
     """Convert seconds to ASS time format H:MM:SS.cc (centiseconds)."""
+    seconds = max(0.0, seconds)
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
@@ -32,16 +33,16 @@ def _seconds_to_ass_time(seconds: float) -> str:
 
 def _group_words(
     words: list[dict[str, Any]],
-    max_words: int = 4,
-    max_duration: float = 2.5,
-    max_gap: float = 0.8,
+    max_words: int = 5,
+    max_duration: float = 3.0,
+    max_gap: float = 0.6,
 ) -> list[list[dict[str, Any]]]:
     """Group words into subtitle chunks.
 
-    Groups are split when:
+    Splits when:
     - max_words reached
-    - max_duration exceeded
-    - gap between words > max_gap
+    - cumulative duration exceeds max_duration
+    - silence gap between consecutive words exceeds max_gap
     """
     if not words:
         return []
@@ -70,111 +71,175 @@ def _group_words(
     return groups
 
 
+def _adapt_for_aspect_ratio(
+    play_res_x: int,
+    play_res_y: int,
+    font_size_pct: float,
+) -> float:
+    """Increase font percentage for landscape / square video.
+
+    When a landscape (16:9) clip is shown on a vertical phone, the video
+    occupies roughly 56% of screen width-equivalent height.  To keep
+    subtitles readable we scale the percentage up so the *perceived* size
+    on a phone stays roughly consistent.
+
+    Resulting perceived sizes (base 3.5%, 1080-wide phone):
+      Portrait  1080×1920  → 67 px in video, ~67 px on phone
+      Square    1080×1080  → 42 px in video, ~42 px on phone (min-clamp)
+      Landscape 1920×1080  → 76 px in video, ~43 px on phone
+      Landscape 1280×720   → 51 px in video, ~43 px on phone
+    """
+    aspect = play_res_x / max(1, play_res_y)
+    if aspect <= 1.0:
+        return font_size_pct
+    # At 16:9 (≈1.78) we need ~2× the base pct so the font is big enough
+    # in the video frame to survive the downscaling on a phone.
+    return font_size_pct * (1.0 + (aspect - 1.0) * 1.3)
+
+
+def _resolve_font_size(play_res_y: int, font_size_pct: float) -> int:
+    """Calculate ASS font size as a percentage of vertical resolution.
+
+    Enforces a minimum of 42 px so even low-res or square videos stay
+    readable on a phone.
+    """
+    return max(42, round(play_res_y * font_size_pct / 100.0))
+
+
+def _resolve_outline(play_res_y: int, font_size_pct: float) -> int:
+    """Scale outline thickness relative to resolution and font size."""
+    return max(2, round(play_res_y * font_size_pct * 0.07 / 100.0))
+
+
 def generate_ass_subtitles(
     words: list[dict[str, Any]],
     play_res_x: int = 1080,
     play_res_y: int = 1920,
     font_name: str = "Arial",
-    font_size: int = 72,
+    font_size_pct: float = 3.5,
     highlight_color: str | None = None,
     normal_color: str | None = None,
-    outline_width: int = 4,
-    shadow_depth: int = 1,
-    position: str = "center",
-    max_words_per_group: int = 4,
+    position: str = "lower",
+    max_words_per_group: int = 5,
 ) -> str:
-    """Generate an ASS subtitle string with TikTok-style karaoke highlighting.
+    """Generate an ASS subtitle string with karaoke word highlighting.
+
+    Key design choices:
+    - **No temporal overlap**: each line ends exactly when the next begins
+      (or earlier if there is a natural gap).
+    - **No fade / pop-in**: subtitles snap on/off cleanly.
+    - **Lower-third default**: positioned near the bottom of the frame.
+    - **Percentage-based sizing**: font and outline scale with resolution.
 
     Args:
-        words: List of {"word": str, "start": float, "end": float} dicts.
-                Timestamps should be relative to clip start (0-based).
-        play_res_x: Subtitle canvas width (match output video).
+        words: ``[{"word": str, "start": float, "end": float}, ...]``
+               Timestamps relative to clip start (0-based).
+        play_res_x: Subtitle canvas width  (match output video).
         play_res_y: Subtitle canvas height (match output video).
-        font_name: Font family name.
-        font_size: Font size in ASS units.
-        highlight_color: ASS color for highlighted word (default: yellow).
-        normal_color: ASS color for normal text (default: white).
-        outline_width: Text outline thickness.
-        shadow_depth: Shadow distance.
-        position: "center", "upper", or "lower".
+        font_name: Font family.
+        font_size_pct: Font size as percentage of play_res_y (default 3.5%).
+        highlight_color: ASS color for the highlighted word.
+        normal_color: ASS color for not-yet-spoken words.
+        position: ``"lower"`` (default), ``"upper"``, or ``"center"``.
         max_words_per_group: Max words per subtitle line.
 
     Returns:
         Complete ASS subtitle file as a string.
     """
+
     hi_color = highlight_color or COLOR_HIGHLIGHT
     nm_color = normal_color or COLOR_NORMAL
 
-    # Alignment based on position
-    alignment_map = {"upper": 8, "center": 5, "lower": 2}
-    alignment = alignment_map.get(position, 5)
+    # Auto-adapt for landscape videos viewed on vertical phone screens
+    effective_pct = _adapt_for_aspect_ratio(play_res_x, play_res_y, font_size_pct)
+    font_size = _resolve_font_size(play_res_y, effective_pct)
+    outline_w = _resolve_outline(play_res_y, effective_pct)
+    shadow_depth = max(1, outline_w // 2)
 
-    # MarginV for positioning
-    margin_v_map = {"upper": 450, "center": 0, "lower": 120}
-    margin_v = margin_v_map.get(position, 0)
+    # ── Alignment & margins ──────────────────────────────────────────────
+    # ASS alignment numpad: 1-3 bottom, 4-6 middle, 7-9 top
+    # We use center-horizontal for each row.
+    margin_pct = {
+        "lower":  5.0,   # 5% from bottom
+        "center": 0.0,   # vertically centred (MarginV ignored for align 5)
+        "upper":  5.0,   # 5% from top
+    }
+    alignment_map = {"lower": 2, "center": 5, "upper": 8}
+    alignment = alignment_map.get(position, 2)
+    margin_v = round(play_res_y * margin_pct.get(position, 5.0) / 100.0)
+    margin_h = round(play_res_x * 4.0 / 100.0)   # 4% horizontal padding
 
-    # ASS header
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {play_res_x}
-PlayResY: {play_res_y}
-WrapStyle: 0
-ScaledBorderAndShadow: yes
+    # ── ASS header ───────────────────────────────────────────────────────
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {play_res_x}\n"
+        f"PlayResY: {play_res_y}\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Sub,{font_name},{font_size},"
+        f"{hi_color},{nm_color},{COLOR_OUTLINE},{COLOR_SHADOW},"
+        f"-1,0,0,0,100,100,1.5,0,1,{outline_w},{shadow_depth},"
+        f"{alignment},{margin_h},{margin_h},{margin_v},1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, "
+        "MarginL, MarginR, MarginV, Effect, Text\n"
+    )
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TikTok,{font_name},{font_size},{hi_color},{nm_color},{COLOR_OUTLINE},{COLOR_SHADOW},-1,0,0,0,100,100,2,0,1,{outline_width},{shadow_depth},{alignment},40,40,{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    # Group words into subtitle chunks
+    # ── Group words ──────────────────────────────────────────────────────
     groups = _group_words(words, max_words=max_words_per_group)
+    if not groups:
+        return header
 
+    # ── Resolve non-overlapping time ranges ──────────────────────────────
+    # Each group is shown from its first word's start to its last word's
+    # end, BUT we clamp the end so it never exceeds the next group's start.
+    # A tiny gap (MIN_GAP) is enforced so renderers don't double-draw.
+    MIN_GAP = 0.04  # 40 ms — 1 frame at 25 fps
+
+    time_ranges: list[tuple[float, float]] = []
+    for g in groups:
+        time_ranges.append((g[0]["start"], g[-1]["end"]))
+
+    clamped: list[tuple[float, float]] = []
+    for i, (gs, ge) in enumerate(time_ranges):
+        if i + 1 < len(time_ranges):
+            next_start = time_ranges[i + 1][0]
+            # end must be before the next group starts
+            ge = min(ge, next_start - MIN_GAP)
+        # ensure positive duration
+        if ge <= gs:
+            ge = gs + 0.1
+        clamped.append((gs, ge))
+
+    # ── Build dialogue lines ─────────────────────────────────────────────
     dialogue_lines: list[str] = []
-    for group in groups:
-        if not group:
-            continue
+    for group, (g_start, g_end) in zip(groups, clamped):
+        start_str = _seconds_to_ass_time(g_start)
+        end_str   = _seconds_to_ass_time(g_end)
 
-        group_start = group[0]["start"]
-        group_end = group[-1]["end"]
-
-        # Keep each line within a short window after its start
-        group_end_padded = min(group_end + 0.15, group_start + 3.2)
-
-        start_str = _seconds_to_ass_time(max(0, group_start))
-        end_str = _seconds_to_ass_time(group_end_padded)
-
-        # Build karaoke text with \kf tags
-        # \kf = karaoke fill (smooth left→right sweep)
-        # Duration in centiseconds
+        # Karaoke fill tags: \kf<centiseconds>
         parts: list[str] = []
         for i, word in enumerate(group):
-            word_start = word["start"]
-            word_end = word["end"]
-
-            # For the first word, include any gap from group_start
             if i == 0:
-                effective_start = group_start
+                effective_start = g_start
             else:
-                # Include gap before this word (assign to this word's fill)
                 effective_start = group[i - 1]["end"]
 
-            dur_cs = max(1, round((word_end - effective_start) * 100))
-            clean_word = word["word"].strip()
-            if clean_word:
-                parts.append(f"{{\\kf{dur_cs}}}{clean_word}")
+            dur_cs = max(1, round((word["end"] - effective_start) * 100))
+            clean = word["word"].strip()
+            if clean:
+                parts.append(f"{{\\kf{dur_cs}}}{clean}")
 
         text = " ".join(parts)
-
-        # Add subtle pop-in and a quick fade-in/out within the line duration
-        text = (
-            f"{{\\fscx105\\fscy105\\t(0,100,\\fscx100\\fscy100)"
-            f"\\fad(200,350)}}{text}"
-        )
-
-        line = f"Dialogue: 0,{start_str},{end_str},TikTok,,0,0,0,,{text}"
+        line = f"Dialogue: 0,{start_str},{end_str},Sub,,0,0,0,,{text}"
         dialogue_lines.append(line)
 
     return header + "\n".join(dialogue_lines) + "\n"
@@ -187,31 +252,32 @@ def get_clip_words(
 ) -> list[dict[str, Any]]:
     """Extract word-level timestamps for a clip's time range.
 
-    Returns words with timestamps adjusted to be relative to clip start (0-based).
+    Returns words with timestamps adjusted to be relative to clip start
+    (0-based) and sorted chronologically.
     """
     words: list[dict[str, Any]] = []
 
     for seg in segments:
-        # keep segments that overlap the clip at all
         if seg["end"] < clip_start or seg["start"] > clip_end:
             continue
 
         for w in seg.get("words", []):
             w_start = w.get("start", 0)
-            w_end = w.get("end", 0)
-            w_text = w.get("word", "").strip()
+            w_end   = w.get("end", 0)
+            w_text  = w.get("word", "").strip()
 
-            # include any word that overlaps the clip range, with simple padding
             if not w_text:
                 continue
-            if w_end < clip_start - 0.2 or w_start > clip_end + 0.2:
-                # completely out of range after a small margin
+            # Only include words whose midpoints fall inside the clip
+            w_mid = (w_start + w_end) / 2.0
+            if w_mid < clip_start or w_mid > clip_end:
                 continue
 
             words.append({
                 "word": w_text,
-                "start": max(0, w_start - clip_start),
-                "end": max(0, w_end - clip_start),
+                "start": max(0.0, w_start - clip_start),
+                "end":   max(0.0, w_end   - clip_start),
             })
 
+    words.sort(key=lambda w: w["start"])
     return words

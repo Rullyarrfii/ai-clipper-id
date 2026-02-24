@@ -91,7 +91,7 @@ def _postprocess_one(
     output_dir: Path,
     *,
     subtitles: bool = True,
-    subtitle_position: str = "center",
+    subtitle_position: str = "lower",
 ) -> str:
     """Post-process a single clip with minimal enhancements.
 
@@ -255,7 +255,7 @@ def postprocess_clips(
     *,
     max_workers: int = 2,
     subtitles: bool = True,
-    subtitle_position: str = "center",
+    subtitle_position: str = "lower",
 ) -> list[str]:
     """Post-process all extracted clips in parallel.
 

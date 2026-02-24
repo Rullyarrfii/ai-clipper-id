@@ -34,9 +34,14 @@ def _extract_one(
     clip: dict[str, Any],
     output_dir: Path,
     *,
-    padding: float = 0.15,
+    padding: float = 0.35,
 ) -> str:
-    """Extract a single clip with ffmpeg. Returns output file path."""
+    """Extract a single clip with ffmpeg (frame-accurate). Returns output file path.
+
+    Uses *output-seeking* (``-ss`` after ``-i``) with ``-copyts`` so the
+    seek is frame-accurate rather than snapping to keyframes.  A higher
+    default padding (0.35 s) ensures we don't clip into speech.
+    """
     start = max(0.0, clip["start"] - padding)
     end = clip["end"] + padding
     duration = end - start
@@ -45,24 +50,20 @@ def _extract_one(
     safe = re.sub(r"\s+", "_", safe)[:50]
     out_path = output_dir / f"rank{clip['rank']:02d}_{safe}.mp4"
 
-    # Try hardware encode first on macOS (VideoToolbox), then NVENC, then CPU
     encode_attempts = [
-        # macOS VideoToolbox
         ["-c:v", "h264_videotoolbox", "-b:v", "5M"],
-        # NVIDIA
         ["-c:v", "h264_nvenc", "-preset", "fast", "-crf", "23"],
-        # CPU fallback
-        ["-c:v", "libx264", "-preset", "fast", "-crf", "23"],
+        ["-c:v", "libx264",   "-preset", "fast", "-crf", "23"],
     ]
 
+    # -i first, then -ss/-t  → output seeking = frame-accurate
     base_cmd = [
         "ffmpeg", "-y", "-hide_banner",
-        "-ss", f"{start:.3f}",
         "-i", video_path,
-        "-t", f"{duration:.3f}",
+        "-ss", f"{start:.3f}",
+        "-t",  f"{duration:.3f}",
         "-map", "0:v:0",
         "-map", "0:a:0?",
-        "-shortest",
     ]
     audio_flags = ["-c:a", "aac", "-b:a", "128k"]
     output_flags = ["-movflags", "+faststart", "-loglevel", "error", str(out_path)]

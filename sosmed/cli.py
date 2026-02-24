@@ -92,7 +92,7 @@ def main() -> None:
                     default=True,
                     help="TikTok-style word-by-word subtitles "
                          "(default: on, --no-subtitles to disable)")
-    ap.add_argument("--subtitle-position", default="center",
+    ap.add_argument("--subtitle-position", default="lower",
                     choices=["center", "upper", "lower"],
                     help="Subtitle position (default: center)")
 

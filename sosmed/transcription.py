@@ -12,14 +12,31 @@ from .utils import log
 
 
 def _detect_device() -> str:
-    """Return the best available device (cuda if available, else cpu)."""
+    """Return the best available device (cuda if available, else cpu).
+
+    The original implementation silently fell back to CPU when torch was
+    missing or CUDA wasn't available, which made it hard to know why the
+    log showed "Loading whisper ... on CPU (int8)".  We now log explicit
+    warnings so the user can take corrective action.
+    """
     try:
         import torch
-        if torch.cuda.is_available():
-            return "cuda"
-    except ImportError:
-        pass
-    return "cpu"
+    except ImportError:  # pragma: no cover - environment may lack torch
+        log("WARN",
+            "PyTorch is not installed; transcription will run on CPU. "
+            "Activate the ai_clipper conda env and install a CUDA-enabled "
+            "build (see https://pytorch.org/get-started/locally/).")
+        return "cpu"
+
+    if not torch.cuda.is_available():
+        log("WARN",
+            "PyTorch is installed but CUDA is not available. "
+            "Either the environment uses a CPU-only build or drivers are "
+            "misconfigured. Run `nvidia-smi` and ensure the correct GPU "
+            "build of PyTorch is installed.")
+        return "cpu"
+
+    return "cuda"
 
 
 def _resolve_compute_type(device: str, compute_type: str) -> str:
@@ -61,8 +78,21 @@ def transcribe(
         log("ERROR", "faster-whisper not installed.  pip install faster-whisper")
         sys.exit(1)
 
+    # choose device, with helpful diagnostics
     if device == "auto":
         device = _detect_device()
+    elif device == "cuda":
+        # user explicitly requested CUDA; verify availability
+        try:
+            import torch
+        except ImportError:
+            log("ERROR", "device=cuda requested but PyTorch is not installed. "
+                          "Install a CUDA-enabled PyTorch build or use device=cpu.")
+            sys.exit(1)
+        if not torch.cuda.is_available():
+            log("ERROR", "device=cuda requested but CUDA is not available. "
+                          "Check your drivers or install the correct PyTorch build.")
+            sys.exit(1)
 
     compute_type = _resolve_compute_type(device, compute_type)
 

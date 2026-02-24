@@ -289,19 +289,29 @@ def main() -> None:
         sys.exit(1)
 
     # ── 3. LLM analysis ─────────────────────────────────────────────────────
-    video_dur = _get_video_duration(str(video))
-    clips = find_clips(
-        filtered,
-        min_duration=args.min,
-        max_duration=args.max,
-        max_clips=min(args.max_clips, MAX_CLIPS_HARD_LIMIT),
-        min_score=args.min_score,
-        llm_model=args.llm_model,
-        api_key=args.api_key,
-        video_duration=video_dur,
-        chunk_duration=args.chunk_duration,
-        chunk_overlap=args.chunk_overlap,
-    )
+    # Check if clips.json already exists (cached from previous run)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    clips_cache_file = output_dir / "clips.json"
+    
+    if clips_cache_file.exists():
+        log("INFO", f"Loading cached clips from {clips_cache_file}")
+        clips = json.loads(clips_cache_file.read_text())
+        log("OK", f"Loaded {len(clips)} clips from cache (skipped LLM)")
+    else:
+        # LLM analysis
+        video_dur = _get_video_duration(str(video))
+        clips = find_clips(
+            filtered,
+            min_duration=args.min,
+            max_duration=args.max,
+            max_clips=min(args.max_clips, MAX_CLIPS_HARD_LIMIT),
+            min_score=args.min_score,
+            llm_model=args.llm_model,
+            api_key=args.api_key,
+            video_duration=video_dur,
+            chunk_duration=args.chunk_duration,
+            chunk_overlap=args.chunk_overlap,
+        )
 
     if not clips:
         log("WARN", "No engaging clips found. Exiting.")

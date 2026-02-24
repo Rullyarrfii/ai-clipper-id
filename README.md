@@ -220,6 +220,10 @@ python main.py video.mp4 --model large-v3
 - **GPU Acceleration**: Install CUDA for ~10x faster transcription
 - **Batch Processing**: Process multiple videos with a loop
 - **Model Size**: Use `--model base` for faster processing, `--model large-v3` for better accuracy
+- **Automatic Caching**: Transcript and clips are cached automatically — rerunning `main.py` on the same video **skips transcription and LLM analysis**, jumping straight to extraction/post-processing
+  - Transcript cache: `.cache/ai-video-clipper/{video}_transcript.json`
+  - Clips cache: `clips/{video_stem}/clips.json`
+- **Efficient FFmpeg Encoding**: The tool tries multiple encoding strategies (hardware-accelerated H.264, HEVC, then CPU fallbacks) to maximize compatibility and speed
 
 ## Troubleshooting
 
@@ -234,6 +238,13 @@ python main.py video.mp4 --model large-v3
 
 **Issue**: FFmpeg not found  
 → Install FFmpeg: `brew install ffmpeg` (macOS) or `apt-get install ffmpeg` (Ubuntu)
+
+**Issue**: FFmpeg encoding failures  
+→ The tool automatically tries multiple encoding strategies (H.264 hardware-accelerated, H.264/HEVC NVENC, libx264, fallback codecs). Most failures are resolved automatically. If still failing:
+  - Ensure FFmpeg is installed and in PATH: `which ffmpeg`
+  - Try updating FFmpeg: `apt-get install --only-upgrade ffmpeg`
+  - Check available video codecs: `ffmpeg -codecs | grep hevc`
+  - Run with verbose FFmpeg output in the source code (see `extraction.py` and `postprocess.py`)
 
 ## License
 

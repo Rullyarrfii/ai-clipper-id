@@ -50,10 +50,16 @@ def _extract_one(
     safe = re.sub(r"\s+", "_", safe)[:50]
     out_path = output_dir / f"rank{clip['rank']:02d}_{safe}.mp4"
 
+    # Fallback encode strategies (from most efficient to most compatible)
     encode_attempts = [
         ["-c:v", "h264_videotoolbox", "-b:v", "5M"],
         ["-c:v", "h264_nvenc", "-preset", "fast", "-crf", "23"],
-        ["-c:v", "libx264",   "-preset", "fast", "-crf", "23"],
+        ["-c:v", "hevc_nvenc", "-preset", "fast", "-crf", "23"],
+        ["-c:v", "libx264", "-preset", "fast", "-crf", "23"],
+        ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"],
+        ["-c:v", "mpeg4", "-q:v", "5"],
+        ["-c:v", "msmpeg4v2", "-q:v", "5"],
+        ["-c:v", "copy"],  # Last resort: copy video as-is (very fast if possible)
     ]
 
     # -i first, then -ss/-t  → output seeking = frame-accurate
@@ -68,15 +74,21 @@ def _extract_one(
     audio_flags = ["-c:a", "aac", "-b:a", "128k"]
     output_flags = ["-movflags", "+faststart", "-loglevel", "error", str(out_path)]
 
-    for enc in encode_attempts:
+    last_error = None
+    for i, enc in enumerate(encode_attempts):
         cmd = base_cmd + enc + audio_flags + output_flags
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            log("DEBUG", f"Clip #{clip['rank']} encoded with strategy {i+1}/{len(encode_attempts)}")
             return str(out_path)
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            last_error = e
+            if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+                log("DEBUG", f"Clip #{clip['rank']} encode attempt {i+1} failed: {e.stderr[:150]}")
             continue
 
-    raise RuntimeError(f"All ffmpeg encode strategies failed for clip #{clip['rank']}")
+    error_msg = str(last_error) if last_error else "Unknown error"
+    raise RuntimeError(f"All ffmpeg encode strategies failed for clip #{clip['rank']}: {error_msg}")
 
 
 def extract_clips(

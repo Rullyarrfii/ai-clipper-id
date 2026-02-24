@@ -222,11 +222,13 @@ def _postprocess_one(
     encode_attempts = [
         ["-c:v", "h264_videotoolbox", "-b:v", "6M"],
         ["-c:v", "h264_nvenc", "-preset", "fast", "-crf", "22"],
+        ["-c:v", "hevc_nvenc", "-preset", "fast", "-crf", "22"],
         ["-c:v", "libx264", "-preset", "fast", "-crf", "22"],
+        ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"],
+        ["-c:v", "mpeg4", "-q:v", "5"],
+        ["-c:v", "msmpeg4v2", "-q:v", "5"],
+        ["-c:v", "copy"],  # Last resort: copy as-is
     ]
-    
-    # Always include libx264 with minimal settings as absolute fallback
-    encode_attempts.append(["-c:v", "libx264", "-preset", "ultrafast", "-q:v", "5"])
 
     output_flags = ["-shortest", "-movflags", "+faststart", "-loglevel", "error"]
 
@@ -235,11 +237,12 @@ def _postprocess_one(
         full_cmd = cmd + enc + audio_enc + output_flags + [str(out_path)]
         try:
             result = subprocess.run(full_cmd, check=True, capture_output=True, text=True)
+            log("DEBUG", f"Clip #{clip.get('rank')} post-processed with strategy {i+1}/{len(encode_attempts)}")
             break
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             last_error = e
             if isinstance(e, subprocess.CalledProcessError) and e.stderr:
-                log("DEBUG", f"Encode attempt {i+1} failed: {e.stderr[:200]}")
+                log("DEBUG", f"Post-process attempt {i+1} for clip #{clip.get('rank')} failed: {e.stderr[:150]}")
             continue
     else:
         error_msg = str(last_error) if last_error else "Unknown error"

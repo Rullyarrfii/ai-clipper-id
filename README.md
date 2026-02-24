@@ -12,7 +12,6 @@ An intelligent video-to-clips converter that uses AI transcription and LLM analy
 - 📊 **Smart Ranking** — Clips are ranked by engagement score with compelling hooks extracted
 - 📱 **Auto Portrait Reframing** — Intelligently reframes landscape video to 9:16 portrait with face detection
 - 💬 **TikTok-Style Subtitles** — Word-by-word karaoke-highlighted subtitles burned into video
-- 🎵 **Background Music & SFX** — Add background music with auto-ducking + transition sound effects
 
 ## Project Structure
 
@@ -27,7 +26,7 @@ sosmed/
 │   ├── postprocess.py   # Post-processing orchestrator
 │   ├── reframe.py       # Smart 9:16 portrait reframing
 │   ├── subtitles.py     # TikTok-style ASS subtitle generation
-│   ├── audio_fx.py      # Background music mixing & SFX
+│   ├── postprocess.py   # Apply subtitles (formerly also handled music/SFX)
 │   ├── utils.py         # Logging, constants, prompts
 │   └── llm/             # LLM analysis backends
 ├── clips/
@@ -95,26 +94,20 @@ python main.py video.mp4 --max-clips 50
 # Specify language for transcription
 python main.py video.mp4 --lang id
 
-# Add background music (auto-ducks under speech)
-python main.py video.mp4 --music ~/music/lofi-beat.mp3
-
 # Disable portrait reframing (keep landscape)
 python main.py video.mp4 --no-reframe
 
 # Disable subtitles
 python main.py video.mp4 --no-subtitles
 
-# Disable sound effects
-python main.py video.mp4 --no-sfx
-
 # Change subtitle position
 python main.py video.mp4 --subtitle-position upper
 
 # Raw clips only — no post-processing
-python main.py video.mp4 --no-reframe --no-subtitles --no-sfx
+python main.py video.mp4 --no-reframe --no-subtitles
 
-# Full production: portrait + subtitles + music + SFX (default)
-python main.py video.mp4 --music background.mp3
+# Default run: portrait + subtitles (no audio effects)
+python main.py video.mp4
 ```
 
 ### Command Line Arguments
@@ -128,8 +121,8 @@ python main.py video.mp4 --music background.mp3
 | `--lang` | id | Language code (e.g., `id` for Indonesian) |
 | `--reframe` / `--no-reframe` | on | Portrait (9:16) reframe with face detection |
 | `--subtitles` / `--no-subtitles` | on | TikTok-style word-by-word subtitles |
-| `--music FILE` | none | Background music file (MP3/WAV/M4A) |
-| `--sfx` / `--no-sfx` | on | Transition sound effects (whoosh, impact) |
+| `--music FILE` | none | Background music file (MP3/WAV/M4A) (option removed) |
+| `--sfx` / `--no-sfx` | on | Transition sound effects (removed) |
 | `--subtitle-position` | center | Subtitle position: `center`, `upper`, `lower` |
 
 ## Output
@@ -182,26 +175,8 @@ Word-by-word highlighted subtitles burned directly into the video.
 - Positioned center-screen (customizable with `--subtitle-position`)
 - Disable with `--no-subtitles`
 
-### 🎵 Background Music with Auto-Ducking
-
-Add background music that automatically lowers when speech is detected.
-
-- Provide your own music: `--music path/to/music.mp3`
-- **Side-chain compression** ducks music under speech automatically
-- Smooth fade-in (1.5s) and fade-out (2.5s)
-- Music loops if shorter than clip
-- Recommended: use royalty-free lo-fi, upbeat, or cinematic tracks
-
-### 🔊 Sound Effects (YouTube-Style)
-
-Automatically adds high-energy transition sounds.
-
-- **Whoosh** at clip start (subtle sweep transition)
-- **Impact** shortly after (low-end emphasis)
-- **Rise** sound at 70% mark for longer clips (energy build-up)
-- SFX are generated via FFmpeg and cached for reuse
-- Disable with `--no-sfx`
-
+*Previous versions of the tool also supported background music and transition sound effects
+(the code has since been simplified; audio mixing is no longer performed).*
 ## Example Workflow
 
 ```bash

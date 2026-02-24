@@ -43,7 +43,7 @@ def main() -> None:
         ),
     )
     ap.add_argument("video", help="Path to input video")
-    ap.add_argument("--model", default="medium",
+    ap.add_argument("--model", default="large-v3",
                     choices=["tiny", "base", "small", "medium",
                              "large-v2", "large-v3", "distil-large-v3", "turbo"],
                     help="Whisper model size (default: tiny)")
@@ -92,12 +92,6 @@ def main() -> None:
                     default=True,
                     help="TikTok-style word-by-word subtitles "
                          "(default: on, --no-subtitles to disable)")
-    ap.add_argument("--music", default=None, metavar="FILE",
-                    help="Path to background music file (MP3/WAV/M4A)")
-    ap.add_argument("--sfx", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Add transition sound effects "
-                         "(default: on, --no-sfx to disable)")
     ap.add_argument("--subtitle-position", default="center",
                     choices=["center", "upper", "lower"],
                     help="Subtitle position (default: center)")
@@ -138,9 +132,8 @@ def main() -> None:
         
         # Show post-processing features
         pp_features = []
-        if args.subtitles: pp_features.append("TikTok Subs")
-        if args.music:     pp_features.append(f"Music: {Path(args.music).name}")
-        if args.sfx:       pp_features.append("SFX")
+        if args.subtitles:
+            pp_features.append("TikTok Subs")
         if pp_features:
             print(f"  Features  : {', '.join(pp_features)}")
         else:
@@ -190,12 +183,8 @@ def main() -> None:
             })
         
         # ── Post-process ────────────────────────────────────────────────
-        any_postprocess = args.subtitles or args.music or args.sfx
+        any_postprocess = args.subtitles
         if any_postprocess and raw_outputs:
-            if args.music and not Path(args.music).exists():
-                log("WARN", f"Music file not found: {args.music} — skipping music")
-                args.music = None
-            
             outputs = postprocess_clips(
                 raw_outputs,
                 clips,
@@ -203,8 +192,6 @@ def main() -> None:
                 output_dir=output_dir,
                 max_workers=max(1, args.workers // 2),
                 subtitles=args.subtitles,
-                music_path=args.music,
-                sfx=args.sfx,
                 subtitle_position=args.subtitle_position,
             )
         else:
@@ -221,9 +208,8 @@ def main() -> None:
               f"({elapsed_total:.0f}s total)")
         if any_postprocess:
             pp_str = []
-            if args.subtitles: pp_str.append("subtitles")
-            if args.music:     pp_str.append("music")
-            if args.sfx:       pp_str.append("SFX")
+            if args.subtitles:
+                pp_str.append("subtitles")
             print(f"  Enhanced  : {', '.join(pp_str)}")
         print(f"  Metadata  → {meta}")
         return
@@ -244,8 +230,6 @@ def main() -> None:
     # Show post-processing features
     pp_features = []
     if args.subtitles: pp_features.append("TikTok Subs")
-    if args.music:     pp_features.append(f"Music: {Path(args.music).name}")
-    if args.sfx:       pp_features.append("SFX")
     if pp_features:
         print(f"  Features  : {', '.join(pp_features)}")
     else:
@@ -349,13 +333,9 @@ def main() -> None:
         max_workers=args.workers,
     )
 
-    # ── 5. Post-process (subtitles + music + SFX) ────────────────────────────
-    any_postprocess = args.subtitles or args.music or args.sfx
+    # ── 5. Post-process (subtitles only) ────────────────────────────────
+    any_postprocess = args.subtitles
     if any_postprocess and raw_outputs:
-        if args.music and not Path(args.music).exists():
-            log("WARN", f"Music file not found: {args.music} — skipping music")
-            args.music = None
-
         outputs = postprocess_clips(
             raw_outputs,
             clips,
@@ -363,8 +343,6 @@ def main() -> None:
             output_dir=output_dir,
             max_workers=max(1, args.workers // 2),
             subtitles=args.subtitles,
-            music_path=args.music,
-            sfx=args.sfx,
             subtitle_position=args.subtitle_position,
         )
     else:
@@ -381,8 +359,7 @@ def main() -> None:
           f"({elapsed_total:.0f}s total)")
     if any_postprocess:
         pp_str = []
-        if args.subtitles: pp_str.append("subtitles")
-        if args.music:     pp_str.append("music")
-        if args.sfx:       pp_str.append("SFX")
+        if args.subtitles:
+            pp_str.append("subtitles")
         print(f"  Enhanced  : {', '.join(pp_str)}")
     print(f"  Metadata  → {meta}")

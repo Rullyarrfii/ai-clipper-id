@@ -75,7 +75,7 @@ def generate_ass_subtitles(
     play_res_x: int = 1080,
     play_res_y: int = 1920,
     font_name: str = "Arial",
-    font_size: int = 58,
+    font_size: int = 72,
     highlight_color: str | None = None,
     normal_color: str | None = None,
     outline_width: int = 4,
@@ -140,8 +140,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         group_start = group[0]["start"]
         group_end = group[-1]["end"]
 
-        # Add small padding at the end for readability
-        group_end_padded = group_end + 0.15
+        # Keep each line within a short window after its start
+        group_end_padded = min(group_end + 0.15, group_start + 3.2)
 
         start_str = _seconds_to_ass_time(max(0, group_start))
         end_str = _seconds_to_ass_time(group_end_padded)
@@ -168,8 +168,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         text = " ".join(parts)
 
-        # Add subtle pop-in animation: scale from 105% to 100% over 100ms
-        text = f"{{\\fscx105\\fscy105\\t(0,100,\\fscx100\\fscy100)}}{text}"
+        # Add subtle pop-in and a quick fade-in/out within the line duration
+        text = (
+            f"{{\\fscx105\\fscy105\\t(0,100,\\fscx100\\fscy100)"
+            f"\\fad(200,350)}}{text}"
+        )
 
         line = f"Dialogue: 0,{start_str},{end_str},TikTok,,0,0,0,,{text}"
         dialogue_lines.append(line)
@@ -189,6 +192,7 @@ def get_clip_words(
     words: list[dict[str, Any]] = []
 
     for seg in segments:
+        # keep segments that overlap the clip at all
         if seg["end"] < clip_start or seg["start"] > clip_end:
             continue
 
@@ -197,12 +201,17 @@ def get_clip_words(
             w_end = w.get("end", 0)
             w_text = w.get("word", "").strip()
 
-            # Only include words fully within clip boundaries
-            if w_start >= clip_start - 0.1 and w_end <= clip_end + 0.1 and w_text:
-                words.append({
-                    "word": w_text,
-                    "start": max(0, w_start - clip_start),
-                    "end": max(0, w_end - clip_start),
-                })
+            # include any word that overlaps the clip range, with simple padding
+            if not w_text:
+                continue
+            if w_end < clip_start - 0.2 or w_start > clip_end + 0.2:
+                # completely out of range after a small margin
+                continue
+
+            words.append({
+                "word": w_text,
+                "start": max(0, w_start - clip_start),
+                "end": max(0, w_end - clip_start),
+            })
 
     return words

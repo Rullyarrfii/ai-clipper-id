@@ -1,0 +1,4 @@
+faster-whisper
+openai
+anthropic
+requests

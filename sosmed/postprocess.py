@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from .subtitles import generate_ass_subtitles, get_clip_words
+from .subtitles import generate_ass_subtitles, generate_title_overlay, get_clip_words
 from .utils import log
 
 
@@ -124,13 +124,6 @@ def _postprocess_one(
             clip_start=clip["start"],
             clip_end=clip["end"],
         )
-        if not words:
-            # fall back to clip title so something is shown
-            title = clip.get("title") or clip.get("topic") or ""
-            if title:
-                words = [{"word": title, "start": 0.0, "end": clip_duration}]
-                log("DEBUG", f"No word timestamps; falling back to title for subtitles in clip #{clip.get('rank')}")
-
         if words:
             ass_content = generate_ass_subtitles(
                 words,
@@ -146,14 +139,38 @@ def _postprocess_one(
             tmp.close()
             ass_path = tmp.name
             log("DEBUG", f"Subtitles written to {ass_path} for clip #{clip.get('rank')} ({len(words)} words)")
-            # we have an ass file even if we fell back above
+
+    # ── 1.5. Generate title overlay ──────────────────────────────────────────
+    title_ass_path = None
+    title = clip.get("title") or clip.get("topic") or ""
+    if title:
+        title_content = generate_title_overlay(
+            title,
+            play_res_x=out_w,
+            play_res_y=out_h,
+            duration=3.0,
+        )
+        tmp_title = tempfile.NamedTemporaryFile(
+            suffix=".ass", prefix="sosmed_title_",
+            delete=False, mode="w", encoding="utf-8",
+        )
+        tmp_title.write(title_content)
+        tmp_title.close()
+        title_ass_path = tmp_title.name
+        log("DEBUG", f"Title overlay written to {title_ass_path} for clip #{clip.get('rank')}")
 
     # ── 2. Build video filter chain ──────────────────────────────────────────
     vfilters: list[str] = []
 
+    # Apply subtitles first (lower layer)
     if ass_path:
         escaped = _escape_ass_path(ass_path)
         vfilters.append(f"ass={escaped}")
+    
+    # Apply title overlay second (upper layer)
+    if title_ass_path:
+        escaped_title = _escape_ass_path(title_ass_path)
+        vfilters.append(f"ass={escaped_title}")
 
     # audio filters have been removed; we simply pass through audio/video
     audio_extra_inputs: list[str] = []
@@ -234,6 +251,12 @@ def _postprocess_one(
     if ass_path:
         try:
             os.unlink(ass_path)
+        except OSError:
+            pass
+    
+    if title_ass_path:
+        try:
+            os.unlink(title_ass_path)
         except OSError:
             pass
 

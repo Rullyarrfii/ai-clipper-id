@@ -164,23 +164,29 @@ def main() -> None:
             max_workers=args.workers,
         )
         
-        # For example mode, we need dummy segments for subtitles
-        # Create minimal segments covering the clip ranges
-        segments = []
-        for clip in clips:
-            segments.append({
-                "id": 0,
-                "seek": 0,
-                "start": clip["start"],
-                "end": clip["end"],
-                "text": f"{clip.get('title', '')} - {clip.get('topic', '')}",
-                "tokens": [],
-                "temperature": 0.0,
-                "avg_logprob": 0.0,
-                "compression_ratio": 0.0,
-                "no_speech_prob": 0.0,
-                "words": []  # Would need proper word timestamps for full subtitle support
-            })
+        # In example mode, prefer cached transcript for real word timestamps
+        cache_path = _get_transcript_cache_path(str(video))
+        if cache_path.exists():
+            log("INFO", f"Loading cached transcript from {cache_path}")
+            segments = json.loads(cache_path.read_text())
+            log("OK", f"Loaded {len(segments)} segments from cache")
+        else:
+            # Fall back to minimal segments covering clip ranges
+            segments = []
+            for clip in clips:
+                segments.append({
+                    "id": 0,
+                    "seek": 0,
+                    "start": clip["start"],
+                    "end": clip["end"],
+                    "text": f"{clip.get('title', '')} - {clip.get('topic', '')}",
+                    "tokens": [],
+                    "temperature": 0.0,
+                    "avg_logprob": 0.0,
+                    "compression_ratio": 0.0,
+                    "no_speech_prob": 0.0,
+                    "words": []
+                })
         
         # ── Post-process ────────────────────────────────────────────────
         any_postprocess = args.subtitles

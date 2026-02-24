@@ -12,6 +12,7 @@ from .transcription import transcribe
 from .prefilter import prefilter_segments
 from .llm import find_clips
 from .extraction import extract_clips, _get_video_duration
+from .postprocess import postprocess_clips
 from .utils import (
     log, BOLD, RESET, CYAN, GREEN, YELLOW,
     MAX_CLIPS_HARD_LIMIT
@@ -55,8 +56,8 @@ def main() -> None:
                     help="Max clip duration in seconds (default: 60)")
     ap.add_argument("--max-clips", type=int, default=MAX_CLIPS_HARD_LIMIT,
                     help=f"Maximum number of clips (default: {MAX_CLIPS_HARD_LIMIT})")
-    ap.add_argument("--min-score", type=int, default=60,
-                    help="Minimum engagement score to keep a clip (default: 60)")
+    ap.add_argument("--min-score", type=int, default=40,
+                    help="Minimum engagement score to keep a clip (default: 40)")
     ap.add_argument("--device", default="auto",
                     choices=["auto", "cuda", "cpu"],
                     help="Compute device (default: auto)")
@@ -73,8 +74,8 @@ def main() -> None:
                     help="Whisper batch size (default: 16; lower if OOM)")
     ap.add_argument("--workers", type=int, default=4,
                     help="Parallel ffmpeg workers (default: 4)")
-    ap.add_argument("--chunk-duration", type=float, default=480.0,
-                    help="LLM chunk duration in seconds (default: 480)")
+    ap.add_argument("--chunk-duration", type=float, default=360.0,
+                    help="LLM chunk duration in seconds (default: 360)")
     ap.add_argument("--chunk-overlap", type=float, default=60.0,
                     help="Overlap between chunks in seconds (default: 60)")
     ap.add_argument("--output", default="clips",
@@ -86,10 +87,146 @@ def main() -> None:
     ap.add_argument("--llm-model", default=None,
                     help="Override LLM model name for OpenRouter")
 
+    # ── Post-processing options ──────────────────────────────────────────
+    ap.add_argument("--subtitles", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="TikTok-style word-by-word subtitles "
+                         "(default: on, --no-subtitles to disable)")
+    ap.add_argument("--music", default=None, metavar="FILE",
+                    help="Path to background music file (MP3/WAV/M4A)")
+    ap.add_argument("--sfx", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Add transition sound effects "
+                         "(default: on, --no-sfx to disable)")
+    ap.add_argument("--subtitle-position", default="center",
+                    choices=["center", "upper", "lower"],
+                    help="Subtitle position (default: center)")
+
+    # ── Testing options ──────────────────────────────────────────────────
+    ap.add_argument("--example", action="store_true",
+                    help="Load example clips from file (skip transcription/LLM)")
+    ap.add_argument("--example-count", type=int, default=3,
+                    help="Number of example clips to use (default: 3)")
+    ap.add_argument("--clips-file", default="clips/clips.json", metavar="FILE",
+                    help="Path to clips JSON file for example mode (default: clips/clips.json)")
+
     args = ap.parse_args()
     lang = None if args.lang.lower() == "none" else args.lang
-
     video = Path(args.video)
+
+    # ── Example mode: skip to extraction ─────────────────────────────────
+    if args.example:
+        # Load clips from JSON file
+        clips_file = Path(args.clips_file)
+        if not clips_file.exists():
+            log("ERROR", f"Clips file not found: {clips_file}")
+            sys.exit(1)
+        
+        all_clips = json.loads(clips_file.read_text())
+        clips = all_clips[:args.example_count]  # Take only the first N clips
+        
+        output_dir = Path(args.output)
+        if not video.exists():
+            log("ERROR", f"File not found: {video}")
+            sys.exit(1)
+        
+        print(f"\n{BOLD}{CYAN}{'═' * 50}")
+        print(f"   AI Video Clipper — Example Mode (Testing)")
+        print(f"{'═' * 50}{RESET}")
+        print(f"  Video     : {video.name}")
+        print(f"  Clips     : {len(clips)} example clips (from {clips_file.name})")
+        
+        # Show post-processing features
+        pp_features = []
+        if args.subtitles: pp_features.append("TikTok Subs")
+        if args.music:     pp_features.append(f"Music: {Path(args.music).name}")
+        if args.sfx:       pp_features.append("SFX")
+        if pp_features:
+            print(f"  Features  : {', '.join(pp_features)}")
+        else:
+            print(f"  Features  : Raw clips only")
+        print()
+        
+        # Summary table
+        print(f"{BOLD}{'#':<4} {'Score':<6} {'E/I/H':<10} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+        print("─" * 80)
+        for c in clips:
+            d = c["end"] - c["start"]
+            se = c.get("score_easy", "?")
+            si = c.get("score_informative", "?")
+            sh = c.get("score_energy", "?")
+            print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
+                  f"{se}/{si}/{sh}  "
+                  f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
+        print()
+        
+        # Skip to extraction → post-process
+        t_total = time.time()
+        
+        # ── Extract raw clips ────────────────────────────────────────────
+        raw_outputs = extract_clips(
+            str(video),
+            clips,
+            output_dir=output_dir,
+            max_workers=args.workers,
+        )
+        
+        # For example mode, we need dummy segments for subtitles
+        # Create minimal segments covering the clip ranges
+        segments = []
+        for clip in clips:
+            segments.append({
+                "id": 0,
+                "seek": 0,
+                "start": clip["start"],
+                "end": clip["end"],
+                "text": f"{clip.get('title', '')} - {clip.get('topic', '')}",
+                "tokens": [],
+                "temperature": 0.0,
+                "avg_logprob": 0.0,
+                "compression_ratio": 0.0,
+                "no_speech_prob": 0.0,
+                "words": []  # Would need proper word timestamps for full subtitle support
+            })
+        
+        # ── Post-process ────────────────────────────────────────────────
+        any_postprocess = args.subtitles or args.music or args.sfx
+        if any_postprocess and raw_outputs:
+            if args.music and not Path(args.music).exists():
+                log("WARN", f"Music file not found: {args.music} — skipping music")
+                args.music = None
+            
+            outputs = postprocess_clips(
+                raw_outputs,
+                clips,
+                segments,
+                output_dir=output_dir,
+                max_workers=max(1, args.workers // 2),
+                subtitles=args.subtitles,
+                music_path=args.music,
+                sfx=args.sfx,
+                subtitle_position=args.subtitle_position,
+            )
+        else:
+            outputs = raw_outputs
+        
+        # Save metadata
+        output_dir.mkdir(parents=True, exist_ok=True)
+        meta = output_dir / "clips.json"
+        meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+        
+        elapsed_total = time.time() - t_total
+        print(f"\n{GREEN}{BOLD}✓ Done!{RESET} "
+              f"{len(outputs)}/{len(clips)} clips extracted → {output_dir}/ "
+              f"({elapsed_total:.0f}s total)")
+        if any_postprocess:
+            pp_str = []
+            if args.subtitles: pp_str.append("subtitles")
+            if args.music:     pp_str.append("music")
+            if args.sfx:       pp_str.append("SFX")
+            print(f"  Enhanced  : {', '.join(pp_str)}")
+        print(f"  Metadata  → {meta}")
+        return
     if not video.exists():
         log("ERROR", f"File not found: {video}")
         sys.exit(1)
@@ -104,6 +241,15 @@ def main() -> None:
     print(f"  Language  : {lang or 'auto-detect'}")
     print(f"  Duration  : {args.min}–{args.max}s per clip")
     print(f"  Max clips : {args.max_clips} (LLM decides actual count)")
+    # Show post-processing features
+    pp_features = []
+    if args.subtitles: pp_features.append("TikTok Subs")
+    if args.music:     pp_features.append(f"Music: {Path(args.music).name}")
+    if args.sfx:       pp_features.append("SFX")
+    if pp_features:
+        print(f"  Features  : {', '.join(pp_features)}")
+    else:
+        print(f"  Features  : Raw clips only")
     print()
 
     # ── 1. Transcribe ────────────────────────────────────────────────────────
@@ -172,21 +318,57 @@ def main() -> None:
         sys.exit(0)
 
     # Summary table
-    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'Start':>7} {'End':>7} {'Dur':>5}  Title{RESET}")
-    print("─" * 70)
+    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'E/I/H':<10} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+    print("─" * 80)
     for c in clips:
         d = c["end"] - c["start"]
-        print(f"  {c['rank']:<3} {c.get('engagement_score', '?'):<6} "
-              f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c['title']}")
+        se = c.get("score_easy", "?")
+        si = c.get("score_informative", "?")
+        sh = c.get("score_energy", "?")
+        print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
+              f"{se}/{si}/{sh}  "
+              f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
     print()
 
-    # ── 4. Extract ───────────────────────────────────────────────────────────
-    outputs = extract_clips(
+    # Show captions for easy copy-paste
+    print(f"{BOLD}📋 Captions (ready to paste):{RESET}")
+    print("─" * 60)
+    for c in clips:
+        caption = c.get("caption", "")
+        if caption:
+            print(f"  {YELLOW}#{c['rank']}{RESET} {c['title']}")
+            print(f"     {caption}")
+            print()
+    print()
+
+    # ── 4. Extract raw clips ─────────────────────────────────────────────────
+    raw_outputs = extract_clips(
         str(video),
         clips,
         output_dir=output_dir,
         max_workers=args.workers,
     )
+
+    # ── 5. Post-process (subtitles + music + SFX) ────────────────────────────
+    any_postprocess = args.subtitles or args.music or args.sfx
+    if any_postprocess and raw_outputs:
+        if args.music and not Path(args.music).exists():
+            log("WARN", f"Music file not found: {args.music} — skipping music")
+            args.music = None
+
+        outputs = postprocess_clips(
+            raw_outputs,
+            clips,
+            segments,  # original segments for word timestamps
+            output_dir=output_dir,
+            max_workers=max(1, args.workers // 2),
+            subtitles=args.subtitles,
+            music_path=args.music,
+            sfx=args.sfx,
+            subtitle_position=args.subtitle_position,
+        )
+    else:
+        outputs = raw_outputs
 
     # Save metadata
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -197,4 +379,10 @@ def main() -> None:
     print(f"\n{GREEN}{BOLD}✓ Done!{RESET} "
           f"{len(outputs)}/{len(clips)} clips extracted → {output_dir}/ "
           f"({elapsed_total:.0f}s total)")
-    print(f"  Metadata → {meta}")
+    if any_postprocess:
+        pp_str = []
+        if args.subtitles: pp_str.append("subtitles")
+        if args.music:     pp_str.append("music")
+        if args.sfx:       pp_str.append("SFX")
+        print(f"  Enhanced  : {', '.join(pp_str)}")
+    print(f"  Metadata  → {meta}")

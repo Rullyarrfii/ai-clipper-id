@@ -11,13 +11,20 @@ from .transcription import transcribe
 from .prefilter import prefilter_segments
 from .llm import find_clips
 from .extraction import extract_clips
+from .postprocess import postprocess_clips
+from .subtitles import generate_ass_subtitles, get_clip_words
+from .audio_fx import ensure_sfx_exist
 from .utils import log
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "transcribe",
     "prefilter_segments",
     "find_clips",
     "extract_clips",
+    "postprocess_clips",
+    "generate_ass_subtitles",
+    "get_clip_words",
+    "ensure_sfx_exist",
     "log",
 ]

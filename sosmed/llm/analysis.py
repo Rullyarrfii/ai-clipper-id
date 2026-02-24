@@ -71,12 +71,25 @@ def _build_user_prompt(
 ) -> str:
     """Build the user prompt for LLM."""
     header = (
-        f"Temukan SEMUA klip menarik dari transkrip ini.\n"
-        f"Durasi: {min_dur}-{max_dur}s. Maks {max_clips} klip. Score >= {min_score}.\n"
+        f"Identifikasi setiap SUBTOPIK dalam transkrip ini, lalu pilih yang terbaik.\n"
+        f"PENTING: Setiap klip harus mencakup SATU subtopik UTUH dari awal sampai\n"
+        f"selesai. Jangan mulai di tengah pembahasan, jangan potong sebelum selesai.\n"
+        f"Durasi: {min_dur}-{max_dur}s. Maks {max_clips} klip. clip_score >= {min_score}.\n"
     )
     if chunk_info:
         header += f"{chunk_info}\n"
     return f"{header}\nTRANSKRIP:\n{transcript}"
+
+
+def _compute_clip_score(c: dict[str, Any]) -> int:
+    """Compute clip_score from sub-scores, falling back to provided clip_score."""
+    easy = int(c.get("score_easy", 0) or 0)
+    info = int(c.get("score_informative", 0) or 0)
+    energy = int(c.get("score_energy", 0) or 0)
+    if easy + info + energy > 0:
+        return round((easy + info + energy) / 3)
+    # Fallback: use clip_score or legacy engagement_score
+    return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
 
 
 def _validate_clips(
@@ -97,12 +110,12 @@ def _validate_clips(
         except (KeyError, ValueError, TypeError):
             continue
         dur = e - s
-        if dur < min_dur * 0.5 or dur > max_dur * 1.5:
-            continue  # allow 50% tolerance to keep more clips
+        if dur < min_dur * 0.3 or dur > max_dur * 2.0:
+            continue  # generous tolerance to keep more clips
         if video_duration and e > video_duration + 2:
             continue
-        score = int(c.get("engagement_score", 0) or 0)
-        if score < min_score * 0.8:  # softer threshold
+        score = _compute_clip_score(c)
+        if score < min_score * 0.5:  # very soft threshold to maximize clips
             continue
         # Overlap check — allow up to 20% overlap instead of zero
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
@@ -110,22 +123,29 @@ def _validate_clips(
             shorter = min(e1 - s1, e2 - s2)
             return overlap / shorter if shorter > 0 else 0
 
-        overlaps = any(_overlap_ratio(s, e, rs, re) > 0.2 for rs, re in seen_ranges)
+        overlaps = any(_overlap_ratio(s, e, rs, re) > 0.4 for rs, re in seen_ranges)
         if overlaps:
             continue
         seen_ranges.append((s, e))
-        # Ensure required fields
+        # Ensure required fields with new schema
         c.setdefault("rank", len(valid) + 1)
         c.setdefault("title", f"Clip {c['rank']}")
-        c.setdefault("engagement_score", score)
+        c.setdefault("topic", "")
+        c.setdefault("caption", "")
         c.setdefault("reason", "")
         c.setdefault("hook", "")
+        c.setdefault("score_easy", 0)
+        c.setdefault("score_informative", 0)
+        c.setdefault("score_energy", 0)
+        c["clip_score"] = score
+        # Remove legacy field if present
+        c.pop("engagement_score", None)
         valid.append(c)
         if len(valid) >= max_clips:
             break
 
-    # Re-rank by score
-    valid.sort(key=lambda x: -x.get("engagement_score", 0))
+    # Re-rank by clip_score
+    valid.sort(key=lambda x: -x.get("clip_score", 0))
     for i, c in enumerate(valid, 1):
         c["rank"] = i
 
@@ -147,7 +167,7 @@ def _merge_chunk_clips(
     When duplicates are found, keep the one with the higher score.
     """
     # Sort all clips by start time
-    all_clips.sort(key=lambda c: (float(c.get("start", 0)), -int(c.get("engagement_score", 0))))
+    all_clips.sort(key=lambda c: (float(c.get("start", 0)), -_compute_clip_score(c)))
 
     deduped: list[dict[str, Any]] = []
     for clip in all_clips:
@@ -162,9 +182,9 @@ def _merge_chunk_clips(
             es, ee = float(existing["start"]), float(existing["end"])
             overlap = max(0, min(e, ee) - max(s, es))
             shorter = min(e - s, ee - es)
-            if shorter > 0 and overlap / shorter > 0.5:
-                # Keep the higher-scoring one
-                if int(clip.get("engagement_score", 0)) > int(existing.get("engagement_score", 0)):
+            if shorter > 0 and overlap / shorter > 0.7:
+                # Keep the higher-scoring one (stricter dedup = more clips kept)
+                if _compute_clip_score(clip) > _compute_clip_score(existing):
                     deduped[i] = clip
                 is_dup = True
                 break
@@ -175,6 +195,50 @@ def _merge_chunk_clips(
 
     # Now validate the deduped list
     return _validate_clips(deduped, min_dur, max_dur, max_clips, min_score, video_duration)
+
+
+def _find_gaps(
+    clips: list[dict[str, Any]],
+    segments: list[dict[str, Any]],
+    min_gap: float = 30.0,
+) -> list[tuple[float, float]]:
+    """
+    Find time ranges in the transcript not covered by any clip.
+
+    Returns list of (start, end) tuples for gaps >= min_gap seconds.
+    """
+    if not segments:
+        return []
+
+    total_start = segments[0]["start"]
+    total_end = segments[-1]["end"]
+
+    # Sort clips by start time
+    sorted_clips = sorted(clips, key=lambda c: float(c.get("start", 0)))
+
+    gaps: list[tuple[float, float]] = []
+    cursor = total_start
+
+    for c in sorted_clips:
+        cs, ce = float(c["start"]), float(c["end"])
+        if cs > cursor + min_gap:
+            gaps.append((cursor, cs))
+        cursor = max(cursor, ce)
+
+    # Check trailing gap
+    if total_end > cursor + min_gap:
+        gaps.append((cursor, total_end))
+
+    return gaps
+
+
+def _segments_in_range(
+    segments: list[dict[str, Any]],
+    start: float,
+    end: float,
+) -> list[dict[str, Any]]:
+    """Return segments that overlap with the given time range."""
+    return [s for s in segments if s["end"] > start and s["start"] < end]
 
 
 def find_clips(
@@ -196,6 +260,9 @@ def find_clips(
     For long videos (> ~8 min of transcript), splits transcript into
     overlapping chunks and calls the LLM iteratively on each chunk,
     then merges and deduplicates results across all chunks.
+
+    After the first pass, identifies large gaps (uncovered time ranges)
+    and does a second LLM pass to extract additional clips from those gaps.
     """
     # Split into chunks for iterative processing
     chunks = _chunk_segments(segments, chunk_duration, chunk_overlap)
@@ -213,9 +280,9 @@ def find_clips(
     for idx, chunk in enumerate(chunks, 1):
         chunk_start = chunk[0]["start"]
         chunk_end = chunk[-1]["end"]
-        # Scale clips per chunk: for long videos ensure at least 8-15 per chunk
-        clips_per_chunk = max(15, math.ceil(max_clips / max(n_chunks, 1) * 2.0))
-        clips_per_chunk = min(clips_per_chunk, 40)  # cap per-chunk to avoid degraded output
+        # Scale clips per chunk: maximize extraction with generous per-chunk budget
+        clips_per_chunk = max(25, math.ceil(max_clips / max(n_chunks, 1) * 2.5))
+        clips_per_chunk = min(clips_per_chunk, 60)  # higher cap per-chunk
 
         transcript = _build_transcript_text(chunk)
         chunk_info = ""
@@ -250,6 +317,46 @@ def find_clips(
             all_raw_clips, min_duration, max_duration,
             max_clips, min_score, video_duration,
         )
+
+    # ── Gap-filling second pass ──────────────────────────────────────────
+    # Find uncovered time ranges and ask LLM for more clips there
+    if clips and len(clips) < max_clips:
+        gaps = _find_gaps(clips, segments, min_gap=max_duration * 0.8)
+        if gaps:
+            total_gap_dur = sum(e - s for s, e in gaps)
+            log("INFO", f"Gap-fill pass: {len(gaps)} gaps found "
+                       f"({total_gap_dur:.0f}s uncovered), mining for more clips")
+
+            gap_clips: list[dict[str, Any]] = []
+            for gi, (gs, ge) in enumerate(gaps, 1):
+                gap_segs = _segments_in_range(segments, gs, ge)
+                if len(gap_segs) < 3:
+                    continue  # too few segments to form a clip
+                gap_transcript = _build_transcript_text(gap_segs)
+                gap_dur = ge - gs
+                gap_max_clips = max(3, int(gap_dur / min_duration))
+                gap_info = (
+                    f"Ini bagian video yang BELUM ter-cover oleh klip lain "
+                    f"({gs:.0f}s-{ge:.0f}s). Cari SEMUA klip menarik di sini, "
+                    f"bahkan yang skor-nya sedang. Jangan lewatkan apapun!"
+                )
+                user = _build_user_prompt(
+                    gap_transcript, min_duration, max_duration,
+                    gap_max_clips, max(min_score - 15, 20), gap_info,
+                )
+                raw = call_llm(system, user, api_key, llm_model)
+                log("OK", f"Gap {gi}/{len(gaps)} ({gs:.0f}s-{ge:.0f}s): "
+                         f"LLM returned {len(raw)} clips")
+                gap_clips.extend(raw)
+
+            if gap_clips:
+                # Merge gap clips with existing clips
+                combined = list(clips) + gap_clips
+                clips = _merge_chunk_clips(
+                    combined, min_duration, max_duration,
+                    max_clips, min_score, video_duration,
+                )
+                log("OK", f"After gap-fill: {len(clips)} total clips")
 
     if not clips:
         log("WARN", "LLM returned 0 valid clips. The video may not have engaging segments.")

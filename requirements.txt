@@ -2,3 +2,4 @@ faster-whisper
 openai
 anthropic
 requests
+opencv-python-headless

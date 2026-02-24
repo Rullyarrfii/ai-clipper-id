@@ -43,7 +43,7 @@ def main() -> None:
         ),
     )
     ap.add_argument("video", help="Path to input video")
-    ap.add_argument("--model", default="large-v3",
+    ap.add_argument("--model", default="turbo",
                     choices=["tiny", "base", "small", "medium",
                              "large-v2", "large-v3", "distil-large-v3", "turbo"],
                     help="Whisper model size (default: tiny)")

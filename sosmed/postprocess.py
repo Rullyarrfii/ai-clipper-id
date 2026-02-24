@@ -20,13 +20,14 @@ from .utils import log
 def _escape_ass_path(path: str) -> str:
     """Escape file path for FFmpeg's libass subtitle filter in filter_complex.
 
-    Wraps the path in single quotes so that the ffmpeg filter graph parser
-    does not interpret characters like ``:``, ``[``, or ``]`` inside the
-    path as filter-graph syntax.  Single quotes and backslashes inside the
-    path itself are escaped so the quoting stays valid.
+    Escapes special characters that the ffmpeg filter graph parser would
+    otherwise interpret as syntax: backslash, colon, quotes, brackets, semicolons.
+    Do NOT wrap in quotes — just escape individual characters.
     """
-    escaped = path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "'\\''")
-    return f"'{escaped}'"
+    escaped = path.replace("\\", "\\\\")  # backslash first
+    for ch in ":'[];,":
+        escaped = escaped.replace(ch, f"\\{ch}")
+    return escaped
 
 
 def _get_video_info(video_path: str) -> dict[str, Any]:
@@ -212,43 +213,23 @@ def _postprocess_one(
         else:
             cmd.append("-an")
 
-    # Encoding settings — try hardware encoders, fall back to CPU
-    # Build audio encoding separately to handle missing audio gracefully
+    # Encoding settings — use libx264 (reliable on all platforms)
     if has_audio:
         audio_enc = ["-c:a", "aac", "-b:a", "192k"]
     else:
         audio_enc = ["-c:a", "aac"]  # Still set codec even if no input audio
 
-    encode_attempts = [
-        ["-c:v", "h264_videotoolbox", "-b:v", "6M"],
-        ["-c:v", "h264_nvenc", "-preset", "fast", "-crf", "22"],
-        ["-c:v", "hevc_nvenc", "-preset", "fast", "-crf", "22"],
-        ["-c:v", "libx264", "-preset", "fast", "-crf", "22"],
-        ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"],
-        ["-c:v", "mpeg4", "-q:v", "5"],
-        ["-c:v", "msmpeg4v2", "-q:v", "5"],
-        ["-c:v", "copy"],  # Last resort: copy as-is
-    ]
-
+    video_enc = ["-c:v", "libx264", "-b:v", "3M"]
     output_flags = ["-shortest", "-movflags", "+faststart", "-loglevel", "error"]
 
-    last_error = None
-    for i, enc in enumerate(encode_attempts):
-        full_cmd = cmd + enc + audio_enc + output_flags + [str(out_path)]
-        try:
-            result = subprocess.run(full_cmd, check=True, capture_output=True, text=True)
-            log("DEBUG", f"Clip #{clip.get('rank')} post-processed with strategy {i+1}/{len(encode_attempts)}")
-            break
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            last_error = e
-            if isinstance(e, subprocess.CalledProcessError) and e.stderr:
-                log("DEBUG", f"Post-process attempt {i+1} for clip #{clip.get('rank')} failed: {e.stderr[:150]}")
-            continue
-    else:
-        error_msg = str(last_error) if last_error else "Unknown error"
-        raise RuntimeError(
-            f"All encode strategies failed for clip #{clip.get('rank', '?')}: {error_msg}"
-        )
+    full_cmd = cmd + video_enc + audio_enc + output_flags + [str(out_path)]
+    try:
+        result = subprocess.run(full_cmd, check=True, capture_output=True, text=True)
+        log("DEBUG", f"Clip #{clip.get('rank')} post-processed")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        error_detail = e.stderr[:300] if isinstance(e, subprocess.CalledProcessError) and e.stderr else str(e)
+        log("DEBUG", f"ffmpeg cmd: {' '.join(full_cmd)}")
+        raise RuntimeError(f"Post-processing failed for clip #{clip.get('rank', '?')}: {error_detail}")
 
     # ── 5. Cleanup ───────────────────────────────────────────────────────────
     if ass_path:

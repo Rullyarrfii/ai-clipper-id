@@ -56,8 +56,8 @@ def main() -> None:
                     help="Max clip duration in seconds (default: 60)")
     ap.add_argument("--max-clips", type=int, default=MAX_CLIPS_HARD_LIMIT,
                     help=f"Maximum number of clips (default: {MAX_CLIPS_HARD_LIMIT})")
-    ap.add_argument("--min-score", type=int, default=40,
-                    help="Minimum engagement score to keep a clip (default: 40)")
+    ap.add_argument("--min-score", type=int, default=70,
+                    help="Minimum engagement score to keep a clip (default: 70)")
     ap.add_argument("--device", default="auto",
                     choices=["auto", "cuda", "cpu"],
                     help="Compute device (default: auto)")

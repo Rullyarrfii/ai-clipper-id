@@ -261,15 +261,11 @@ def generate_title_overlay(
     duration: float = 3.0,
     font_name: str = "Arial",
 ) -> str:
-    """Generate an ASS overlay for the clip title with per-letter animation.
+    """Generate an ASS overlay for the clip title with clean pop-in animation.
 
-    Creates a moderate-sized, bold title positioned 1/3 from top that:
-    - Fits comfortably within video bounds with proper margins
-    - Each letter animates in individually with scale, rotation, and fade
-    - Uses 8% of video height for font size (readable but not overwhelming)
-    - Has strong outline and shadow for readability
-    - Centered horizontally with smart text wrapping
-    - Keeps clear separation from subtitle area
+    Simple, punchy title card: scales up from 0 → overshoots → settles,
+    holds, then fades out.  No per-letter gimmicks — the whole title
+    animates as one unit for a clean, professional look.
 
     Args:
         title: The title text to display
@@ -281,32 +277,37 @@ def generate_title_overlay(
     Returns:
         Complete ASS subtitle file as a string
     """
-    # Moderate font size - 8% of video height (readable, doesn't overflow)
-    font_size = int(play_res_y * 0.08)
-    
-    # Proportional outline for readability
-    outline_w = max(2, int(font_size * 0.1))
-    shadow_depth = max(1, outline_w // 2)
-    
-    # Position: 1/3 from top
-    margin_v = int(play_res_y * 0.333)
-    # Generous horizontal margins (12%) to prevent overflow
-    margin_h = int(play_res_x * 0.12)
-    
-    # Colors: bold white text with black outline
-    color_text = _rgb_to_ass(255, 255, 255)  # White
-    color_outline = _rgb_to_ass(0, 0, 0)      # Black
-    color_shadow = _rgb_to_ass(0, 0, 0, 100)  # Dark shadow
-    
-    # Center alignment (alignment 5 = middle center)
-    alignment = 5
-    
+    # ── Sizing — big & bold, tight to edges ──────────────────────────────────
+    aspect = play_res_x / play_res_y
+    if aspect < 1.0:
+        # Portrait: size relative to width so it fills the narrow frame
+        font_size = int(play_res_x * 0.09)
+    else:
+        # Landscape: size relative to height
+        font_size = int(play_res_y * 0.10)
+
+    # Tight horizontal margins — 4 % from each edge
+    margin_h = int(play_res_x * 0.04)
+
+    # Outline / shadow proportional to font
+    outline_w = max(3, int(font_size * 0.08))
+    shadow_d = max(2, outline_w // 2)
+
+    # Vertical position: roughly 30 % from top
+    margin_v = int(play_res_y * 0.30)
+
+    # ── Colors ───────────────────────────────────────────────────────────────
+    c_text = _rgb_to_ass(255, 255, 255)
+    c_outline = _rgb_to_ass(0, 0, 0)
+    c_shadow = _rgb_to_ass(0, 0, 0, 120)
+
+    # ── ASS document ─────────────────────────────────────────────────────────
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         f"PlayResX: {play_res_x}\n"
         f"PlayResY: {play_res_y}\n"
-        "WrapStyle: 2\n"  # Smart wrapping to prevent overflow
+        "WrapStyle: 0\n"
         "ScaledBorderAndShadow: yes\n"
         "\n"
         "[V4+ Styles]\n"
@@ -314,65 +315,44 @@ def generate_title_overlay(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        # alignment 8 = top-center
         f"Style: Title,{font_name},{font_size},"
-        f"{color_text},{color_text},{color_outline},{color_shadow},"
-        f"-1,0,0,0,100,100,0.8,0,1,{outline_w},{shadow_depth},"
-        f"{alignment},{margin_h},{margin_h},{margin_v},1\n"
+        f"{c_text},{c_text},{c_outline},{c_shadow},"
+        f"-1,0,0,0,100,100,1,0,1,{outline_w},{shadow_d},"
+        f"8,{margin_h},{margin_h},{margin_v},1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, "
         "MarginL, MarginR, MarginV, Effect, Text\n"
     )
-    
-    start_time = _seconds_to_ass_time(0.0)
-    end_time = _seconds_to_ass_time(duration)
-    
-    # Create per-letter animation
-    # Each letter: starts small (60% scale), rotated, and fades in
-    # Animation spreads over first 1000ms, then holds, then fades out
-    
-    # Split title into characters (preserving spaces)
-    chars = list(title)
-    total_letters = len([c for c in chars if c.strip()])  # Count non-space chars
-    
-    # Animation parameters
-    animation_duration = 1000  # ms - total time for all letters to animate in
-    letter_delay = min(80, animation_duration // max(1, total_letters))  # delay between letters
-    per_letter_anim = 250  # ms - duration for each letter's entrance animation
-    fade_out_start = (duration - 0.3) * 1000  # Start fade out 300ms before end
-    fade_out_duration = 300  # ms
-    
-    # Build animated text with per-letter effects
-    animated_parts = []
-    letter_index = 0
-    
-    for char in chars:
-        if char.strip():  # Non-space character
-            delay = letter_index * letter_delay
-            anim_end = delay + per_letter_anim
-            
-            # Each letter animation:
-            # 1. Start: 60% scale, 10° rotation, partially transparent
-            # 2. Transform to: 100% scale, 0° rotation, fully opaque
-            # 3. At end: fade out
-            
-            # Initial state (small, slightly rotated, semi-transparent)
-            initial = f"\\alpha&H80\\fscx60\\fscy60\\frz10"
-            # Transform to normal over per_letter_anim duration
-            transform = f"\\t({delay},{anim_end},\\alpha&H00\\fscx100\\fscy100\\frz0)"
-            # Fade out at the end
-            fade_out = f"\\t({int(fade_out_start)},{int(fade_out_start + fade_out_duration)},\\alpha&HFF)"
-            
-            animated_parts.append(f"{{{initial}{transform}{fade_out}}}{char}")
-            letter_index += 1
-        else:
-            # Space - no animation, just maintain the space
-            animated_parts.append(char)
-    
-    text_with_animation = "".join(animated_parts)
-    
-    dialogue = f"Dialogue: 0,{start_time},{end_time},Title,,0,0,0,,{text_with_animation}\n"
-    
+
+    t0 = _seconds_to_ass_time(0.0)
+    t1 = _seconds_to_ass_time(duration)
+
+    # ── Animation: whole-title pop-in → hold → fade-out ──────────────────────
+    #
+    # Phase 1  0–250 ms   scale 0→115 %, alpha FF→00  (burst in, overshoot)
+    # Phase 2  250–400 ms scale 115→100 %              (settle back)
+    # Phase 3  hold
+    # Phase 4  last 400 ms alpha 00→FF                 (fade out)
+    #
+    fade_out_ms = int((duration - 0.4) * 1000)
+    end_ms = int(duration * 1000)
+
+    anim = (
+        # Start invisible & tiny
+        "{\\alpha&HFF\\fscx0\\fscy0"
+        # Phase 1: burst in with overshoot
+        "\\t(0,250,\\alpha&H00\\fscx115\\fscy115)"
+        # Phase 2: settle to 100 %
+        "\\t(250,400,\\fscx100\\fscy100)"
+        # Phase 4: fade out
+        f"\\t({fade_out_ms},{end_ms},\\alpha&HFF)"
+        "}"
+    )
+
+    dialogue = f"Dialogue: 0,{t0},{t1},Title,,0,0,0,,{anim}{title}\n"
+
     return header + dialogue
 
 

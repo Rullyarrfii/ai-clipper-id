@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from .utils import log
+from .utils import get_ffmpeg, get_ffprobe, log
 
 
 def _get_video_duration(path: str) -> float | None:
@@ -17,7 +17,7 @@ def _get_video_duration(path: str) -> float | None:
     try:
         out = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                get_ffprobe(), "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 path,
@@ -52,7 +52,7 @@ def _extract_one(
 
     # -i first, then -ss/-t  → output seeking = frame-accurate
     base_cmd = [
-        "ffmpeg", "-y", "-hide_banner",
+        get_ffmpeg(), "-y", "-hide_banner",
         "-i", video_path,
         "-ss", f"{start:.3f}",
         "-t",  f"{duration:.3f}",

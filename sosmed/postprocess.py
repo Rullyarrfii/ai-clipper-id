@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .subtitles import generate_ass_subtitles, generate_title_overlay, get_clip_words
-from .utils import log
+from .utils import get_ffmpeg, get_ffprobe, log
 
 
 def _escape_ass_path(path: str) -> str:
@@ -35,7 +35,7 @@ def _get_video_info(video_path: str) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                get_ffprobe(), "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height,r_frame_rate,duration",
                 "-show_entries", "format=duration",
@@ -63,7 +63,7 @@ def _get_video_info(video_path: str) -> dict[str, Any]:
         # Check for audio stream
         result2 = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                get_ffprobe(), "-v", "error",
                 "-select_streams", "a:0",
                 "-show_entries", "stream=codec_type",
                 "-of", "csv=p=0",
@@ -178,7 +178,7 @@ def _postprocess_one(
     audio_filter = ""
 
     # ── 4. Build FFmpeg command ──────────────────────────────────────────────
-    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
+    cmd: list[str] = [get_ffmpeg(), "-y", "-hide_banner"]
 
     # Main input
     cmd.extend(["-i", raw_clip_path])
@@ -219,7 +219,11 @@ def _postprocess_one(
     else:
         audio_enc = ["-c:a", "aac"]  # Still set codec even if no input audio
 
-    video_enc = ["-c:v", "copy"]
+    # Use libx264 when filters are applied, otherwise can copy
+    if vfilters:
+        video_enc = ["-c:v", "libx264", "-preset", "fast", "-crf", "23"]
+    else:
+        video_enc = ["-c:v", "copy"]
     output_flags = ["-shortest", "-movflags", "+faststart", "-loglevel", "error"]
 
     full_cmd = cmd + video_enc + audio_enc + output_flags + [str(out_path)]

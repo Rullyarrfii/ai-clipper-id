@@ -2,6 +2,7 @@
 Segment pre-filtering: removes noise, duplicates, and low-value segments.
 """
 
+import re
 from typing import Any
 
 from .utils import FILLER_RE
@@ -20,6 +21,60 @@ def _jaccard(a: str, b: str) -> float:
     return len(sa & sb) / len(union) if union else 0.0
 
 
+def _is_likely_music(txt: str, no_speech_prob: float) -> bool:
+    """
+    Detect if transcribed text is likely pure music/instrumental rather than speech.
+    
+    Conservative approach: only filter VERY confident music matches to avoid
+    filtering actual speech that happens over background music.
+    
+    Heuristics (in order of confidence):
+    - Very high no_speech_prob (>0.75) = Whisper strongly says NOT speech
+    - Pure onomatopoeia/music sounds (la la, doo doo, etc.) 
+    - Stage direction markers like [instrumental], [music]
+    - NOT filtering short phrases or common words, as those may be real speech
+    """
+    if not txt or not txt.strip():
+        return False
+    
+    clean = txt.strip().lower()
+    words = clean.split()
+    word_count = len(words)
+    
+    # Only use no_speech_prob as a STRONG filter (>0.75, not 0.5)
+    # Whisper's confidence needs to be very high that it's NOT speech
+    if no_speech_prob > 0.75:
+        return True
+    
+    # Pure music marker sounds: ONLY if ENTIRE segment is just these sounds
+    # (not mixed with other words)
+    music_markers = (
+        r"la+(?:\s+la+)*|"
+        r"na+(?:\s+na+)*|"
+        r"da+(?:\s+da+)*|"
+        r"ba+(?:\s+ba+)*|"
+        r"doo+(?:\s+doo+)*|"
+        r"woo+(?:\s+woo+)*|"
+        r"ooh+(?:\s+ooh+)*|"
+        r"ahh+(?:\s+ahh+)*|"
+        r"mm+(?:\s+mm+)*|"
+        r"ohh+(?:\s+ohh+)*|"
+        r"woah+(?:\s+woah+)*"
+    )
+    if re.match(f"^({music_markers})$", clean):
+        return True
+    
+    # Explicit stage directions/markers that indicate non-speech sections
+    if any(marker in clean for marker in [
+        "[instrumental", "[music]", "[background music]",
+        "(instrumental)", "(music)", "(singing)",
+        "[singing]", "♪", "♫"
+    ]):
+        return True
+    
+    return False
+
+
 def prefilter_segments(
     segments: list[dict[str, Any]],
     *,
@@ -30,12 +85,13 @@ def prefilter_segments(
     max_wps: float = 12.0,
     dup_threshold: float = 0.85,
     merge_gap: float = 1.0,
+    filter_music: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Filter low-value segments before LLM analysis.
 
     Filters: too-short, too-few-words, high no-speech, pure filler,
-    abnormal speech rate, near-duplicate. Then merges close neighbours.
+    abnormal speech rate, near-duplicate, music/lyrics. Then merges close neighbours.
     """
     kept: list[dict[str, Any]] = []
     reasons: dict[str, int] = {}
@@ -56,6 +112,8 @@ def prefilter_segments(
         if dur < min_duration:          _drop("short_dur"); continue
         if len(txt.split()) < min_words:_drop("few_words"); continue
         if nsp > max_no_speech:         _drop("no_speech"); continue
+        if filter_music and _is_likely_music(txt, nsp):
+            _drop("music"); continue
         if FILLER_RE.match(txt):        _drop("filler"); continue
         if wps < min_wps:               _drop("slow_speech"); continue
         if wps > max_wps:               _drop("hallucination"); continue

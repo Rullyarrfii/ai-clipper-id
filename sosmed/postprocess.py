@@ -213,13 +213,13 @@ def _postprocess_one(
         else:
             cmd.append("-an")
 
-    # Encoding settings — use libx264 (reliable on all platforms)
+    # Audio encoding settings
     if has_audio:
         audio_enc = ["-c:a", "aac", "-b:a", "192k"]
     else:
         audio_enc = ["-c:a", "aac"]  # Still set codec even if no input audio
 
-    video_enc = ["-c:v", "libx264", "-b:v", "3M"]
+    video_enc = ["-c:v", "copy"]
     output_flags = ["-shortest", "-movflags", "+faststart", "-loglevel", "error"]
 
     full_cmd = cmd + video_enc + audio_enc + output_flags + [str(out_path)]
@@ -250,7 +250,7 @@ def _postprocess_one(
             raw_path.unlink()
     except OSError:
         pass
-
+    
     return str(out_path)
 
 

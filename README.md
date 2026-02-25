@@ -7,6 +7,7 @@ An intelligent video-to-clips converter that uses AI transcription and LLM analy
 - 🎬 **Automatic Transcription** — Uses `faster-whisper` for accurate, fast speech-to-text (GPU/CPU auto-detection)
 - 🧠 **AI-Powered Clip Extraction** — LLM automatically decides which segments are most engaging (max 100 clips)
 - 🇮🇩 **Indonesian Optimized** — Pre-filters noise, filler words, and duplicates tuned for Bahasa Indonesia
+- 🎵 **Music/Lyrics Filtering** — Automatically filters out pure instrumental sections and background music from clip analysis
 - ⚡ **Parallel Processing** — Extracts multiple clips simultaneously using FFmpeg
 - 🔌 **Multi-LLM Support** — Works with OpenRouter, Anthropic, OpenAI, or Ollama
 - 📊 **Smart Ranking** — Clips are ranked by engagement score with compelling hooks extracted
@@ -171,6 +172,18 @@ The script generates a `clips/clips.json` file with extracted clips:
 - `engagement_score` — Score 0-100 indicating potential viral appeal
 
 ## Post-Processing Features
+
+### 🎵 Music & Lyrics Filtering
+
+Automatically filters out pure instrumental and music-only sections to prevent them from being included in clip analysis.
+
+- **Conservative approach**: Only filters segments where Whisper indicates very high confidence (>0.75) that it's non-speech
+- **Safe for voice-over**: Speech recorded over background music is preserved — only pure instrumental sections are removed
+- **Pattern detection**: Filters out:
+  - Instrumental-only sections detected by Whisper's `no_speech_prob` confidence score
+  - Pure onomatopoeia patterns (`la la la`, `doo doo`, etc.)
+  - Explicit markers like `[instrumental]`, `[music]`, `[singing]`
+- **Preserves speech with music**: If you're talking while the song plays, your speech will still be transcribed and included in clip analysis
 
 ### 📱 Auto Portrait Reframing (9:16)
 

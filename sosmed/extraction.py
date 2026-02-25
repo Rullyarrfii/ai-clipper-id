@@ -50,9 +50,6 @@ def _extract_one(
     safe = re.sub(r"\s+", "_", safe)[:50]
     out_path = output_dir / f"rank{clip['rank']:02d}_{safe}.mp4"
 
-    # Use libx264 — reliable on all platforms
-    encode_args = ["-c:v", "libx264", "-b:v", "3M"]
-
     # -i first, then -ss/-t  → output seeking = frame-accurate
     base_cmd = [
         "ffmpeg", "-y", "-hide_banner",
@@ -62,10 +59,10 @@ def _extract_one(
         "-map", "0:v:0",
         "-map", "0:a:0?",
     ]
+    encode_args = ["-c:v", "copy"]
     audio_flags = ["-c:a", "aac", "-b:a", "128k"]
     output_flags = ["-movflags", "+faststart", "-loglevel", "error", str(out_path)]
 
-    errors = []
     cmd = base_cmd + encode_args + audio_flags + output_flags
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)

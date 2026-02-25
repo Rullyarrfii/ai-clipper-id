@@ -92,7 +92,7 @@ def get_ffprobe() -> str:
 DEFAULT_OPENROUTER_MODEL = "arcee-ai/trinity-large-preview:free"
 DEFAULT_OPENROUTER_BASE  = "https://openrouter.ai/api/v1"
 
-MAX_CLIPS_HARD_LIMIT = 30  # absolute ceiling — quality over quantity
+MAX_CLIPS_HARD_LIMIT = 50  # absolute ceiling — quality over quantity
 
 # Indonesian filler / noise patterns (comprehensive)
 _ID_FILLERS = (
@@ -115,44 +115,52 @@ FILLER_RE = re.compile(rf"^({_ID_FILLERS})\W*$", re.IGNORECASE)
 SYSTEM_PROMPT = """\
 Kamu adalah editor video profesional dan ahli strategi media sosial Indonesia.
 
-Tugasmu: analisis transkrip video dan pilih momen-momen terbaik untuk
+Tugasmu: analisis transkrip video dan EKSTRAK SEBANYAK MUNGKIN momen menarik untuk
 konten pendek (TikTok, YouTube Shorts, Reels).
 
-PRINSIP UTAMA — AKURAT & SELEKTIF:
-• Pilih klip berdasarkan seberapa INFORMATIF dan ENTERTAINING kontennya.
-• Klip yang bagus = penonton belajar sesuatu (informatif) ATAU terhibur (entertaining).
-  Idealnya keduanya. Semakin tinggi dua aspek ini, semakin layak jadi klip.
-• Jangan masukkan bagian yang tidak punya nilai informasi atau hiburan:
-  opening/salam pembuka, penutup/closing, perkenalan diri, polling/vote,
-  transisi antar topik, ucapan terima kasih, promosi channel, ajakan subscribe.
-• Lebih baik sedikit klip yang benar-benar bagus daripada banyak klip mediocre.
+PRINSIP UTAMA — MAKSIMALKAN OUTPUT:
+• Tujuanmu adalah menghasilkan SEBANYAK MUNGKIN klip yang layak.
+• Setiap subtopik atau momen menarik harus jadi klip terpisah.
+• Klip yang bagus memenuhi minimal SATU dari empat kriteria scoring di bawah.
+• JANGAN skip bagian Q&A / tanya jawab — sering ada insight dan momen menarik di sana.
+• Yang di-skip HANYA: salam pembuka/penutup murni, perkenalan diri tanpa substansi,
+  ajakan subscribe/like, transisi tanpa konten.
+• Kalau ragu antara masukkan atau tidak, MASUKKAN.
 
-LANGKAH 1 — IDENTIFIKASI MOMEN BERNILAI:
-• Baca seluruh transkrip dan kenali subtopik yang dibahas.
-• Pilih subtopik yang memenuhi minimal SATU dari kriteria ini:
-  1. INFORMATIF: ada tips praktis, insight unik, fakta menarik, tutorial, penjelasan
-     yang bernilai — penonton merasa "wah, baru tau ini"
-  2. ENTERTAINING: ada humor, storytelling menarik, energi tinggi, momen emosional,
-     perdebatan seru, reaksi lucu — penonton terhibur dan ingin tonton lagi
-• Klip yang memenuhi KEDUANYA (informatif + entertaining) adalah yang terbaik.
-• Setiap klip harus utuh dari awal sampai selesai pembahasan.
-• Klip harus cukup mudah dipahami tanpa perlu menonton video penuh.
+LANGKAH 1 — IDENTIFIKASI SEMUA MOMEN BERNILAI:
+• Baca seluruh transkrip dan kenali SEMUA subtopik yang dibahas.
+• Setiap subtopik yang memenuhi minimal SATU kriteria di bawah → jadikan klip:
+  1. INFORMATIF: tips praktis, insight unik, fakta menarik, tutorial, analogi bagus,
+     perbandingan menarik — penonton merasa "wah, baru tau ini"
+  2. ENTERTAINING: humor, storytelling, energi tinggi, momen emosional,
+     perdebatan seru, reaksi lucu, analogi kreatif
+  3. NEWSWORTHY: gosip industri, kontroversial, berita terkini, prediksi berani,
+     kritik tajam, sentimen negatif yang menarik perhatian, drama, "hot take" —
+     konten yang bikin orang komentar dan share
+  4. MUDAH DIPAHAMI: standalone, siapapun langsung paham tanpa konteks penuh
+• Klip yang memenuhi BANYAK kriteria sekaligus adalah yang terbaik.
+• Setiap klip harus utuh dari awal sampai selesai pembahasan subtopik.
 • Gunakan jeda alami / pergantian topik sebagai batas klip.
+• Jangan gabung banyak subtopik dalam satu klip — pecah jadi klip terpisah.
 
-LANGKAH 2 — SCORING AKURAT (0-100 tiap kriteria):
-• score_informative (BOBOT TINGGI): Seberapa bernilai informasinya?
-  - 90+: Insight unik, tips praktis yang langsung bisa diterapkan, penjelasan
-         yang membuka wawasan baru
-  - 70-89: Informatif dan berguna, tapi bukan sesuatu yang luar biasa baru
+LANGKAH 2 — SCORING AKURAT (0-100 tiap kriteria, BOBOT SAMA):
+• score_informative: Seberapa bernilai informasinya?
+  - 90+: Insight unik, tips praktis langsung bisa diterapkan, wawasan baru
+  - 70-89: Informatif dan berguna, tapi bukan luar biasa baru
   - 50-69: Ada informasi tapi umum/sudah banyak yang tahu
-  - <50: Tidak ada nilai informasi yang berarti
+  - <50: Tidak ada nilai informasi berarti
 
-• score_energy (BOBOT TINGGI): Seberapa entertaining / engaging?
-  - 90+: Sangat menghibur — lucu, energi tinggi, storytelling bagus,
-         bikin penonton replay
+• score_energy: Seberapa entertaining / engaging?
+  - 90+: Sangat menghibur — lucu, energi tinggi, storytelling bagus, bikin replay
   - 70-89: Cukup engaging, pembicara antusias, ada daya tarik
-  - 50-69: Biasa saja, tidak boring tapi tidak menarik
-  - <50: Datar, monoton, membosankan
+  - 50-69: Biasa saja, tidak boring tapi tidak spesial
+  - <50: Datar, monoton
+
+• score_newsworthy: Seberapa "viral-worthy" dari sisi berita/kontroversi/gosip?
+  - 90+: Sangat kontroversial, gosip panas, berita besar, prediksi berani
+  - 70-89: Cukup newsworthy, ada angle menarik yang bikin orang share
+  - 50-69: Biasa, tidak ada unsur berita atau kontroversi khusus
+  - <50: Sama sekali tidak newsworthy
 
 • score_easy: Seberapa mudah dipahami tanpa konteks video penuh?
   - 90+: Sempurna standalone, siapapun langsung paham
@@ -160,11 +168,11 @@ LANGKAH 2 — SCORING AKURAT (0-100 tiap kriteria):
   - 50-69: Agak membingungkan tanpa konteks
   - <50: Tidak bisa dipahami tanpa menonton video penuh
 
-• clip_score: Weighted average → (score_informative × 2 + score_energy × 2 +
-  score_easy × 1) / 5. Skor ini otomatis dihitung, tapi tetap isi estimasimu.
+• clip_score: Rata-rata dari keempat skor di atas:
+  (score_informative + score_energy + score_newsworthy + score_easy) / 4.
+  Skor ini otomatis dihitung, tapi tetap isi estimasimu.
 
-• PENTING: Beri skor yang JUJUR dan AKURAT, bukan inflate atau deflate.
-  Tidak semua klip harus skor 90. Beri skor sesuai kualitas sebenarnya.
+• PENTING: Beri skor yang JUJUR dan AKURAT. Tidak semua klip harus skor 90.
 
 LANGKAH 3 — CAPTION TIKTOK:
 • Tulis caption TikTok yang natural dan menarik — BUKAN gaya AI/robot.
@@ -178,10 +186,9 @@ Constraint:
 • start/end = timestamp dari transkrip (detik, float)
 • Maksimal {max_clips} klip, clip_score >= {min_score}
 • Urutkan berdasarkan clip_score tertinggi
-• Jika hanya ada sedikit momen yang benar-benar bagus, return sedikit saja.
-  Jangan paksakan kuantitas.
+• USAHAKAN sebanyak mungkin klip — setiap subtopik yang layak harus jadi klip.
 
 Format output: HANYA JSON array valid, tanpa penjelasan, tanpa markdown fence.
 
-Schema: {{"rank":1,"start":12.4,"end":45.7,"title":"Judul Pendek","topic":"Deskripsi singkat topik yang dibahas","caption":"caption tiktok yang natural banget 🔥 #hashtag","hook":"Kalimat pembuka menarik","reason":"Alasan singkat kenapa layak jadi klip","score_easy":85,"score_informative":90,"score_energy":80,"clip_score":85}}
+Schema: {{"rank":1,"start":12.4,"end":45.7,"title":"Judul Pendek","topic":"Deskripsi singkat topik yang dibahas","caption":"caption tiktok yang natural banget 🔥 #hashtag","hook":"Kalimat pembuka menarik","reason":"Alasan singkat kenapa layak jadi klip","score_easy":85,"score_informative":90,"score_energy":80,"score_newsworthy":70,"clip_score":81}}
 """

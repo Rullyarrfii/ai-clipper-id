@@ -72,9 +72,8 @@ def _build_user_prompt(
 ) -> str:
     """Build the user prompt for LLM."""
     header = (
-        f"Analisis transkrip ini dan pilih momen yang paling INFORMATIF dan ENTERTAINING.\n"
-        f"Prioritaskan klip yang punya nilai informasi tinggi dan/atau menghibur.\n"
-        f"Jangan paksakan kuantitas — pilih hanya yang benar-benar layak.\n"
+        f"Analisis transkrip ini dan EKSTRAK SEBANYAK MUNGKIN momen menarik.\n"
+        f"Setiap subtopik yang layak harus jadi klip terpisah.\n"
         f"Durasi: {min_dur}-{max_dur}s. Maks {max_clips} klip. clip_score >= {min_score}.\n"
     )
     if chunk_info:
@@ -83,26 +82,28 @@ def _build_user_prompt(
 
 
 def _compute_clip_score(c: dict[str, Any]) -> int:
-    """Compute clip_score with weighted average: informative & energy count 2×.
+    """Compute clip_score as equal-weight average of all four scores.
 
-    Formula: (informative×2 + energy×2 + easy×1) / 5
-    This prioritises how informative and entertaining a clip is.
+    Formula: (informative + energy + newsworthy + easy) / 4
+    All dimensions matter equally for virality.
     """
     easy = int(c.get("score_easy", 0) or 0)
     info = int(c.get("score_informative", 0) or 0)
     energy = int(c.get("score_energy", 0) or 0)
-    if easy + info + energy > 0:
-        return round((info * 2 + energy * 2 + easy) / 5)
+    newsworthy = int(c.get("score_newsworthy", 0) or 0)
+    if easy + info + energy + newsworthy > 0:
+        return round((info + energy + newsworthy + easy) / 4)
     # Fallback: use clip_score or legacy engagement_score
     return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
 
 
-# Titles/topics that indicate non-viral content (intros, outros, Q&A, etc.)
+# Titles/topics that indicate non-viral content (intros, outros, etc.)
+# NOTE: Q&A / tanya jawab is NOT excluded — often contains great insights
 _LOW_VALUE_PATTERNS = re.compile(
     r"(?i)"
     r"(?:selamat datang|pembuka|opening|penutup|closing|terima kasih|"
     r"thank you|perkenalan|introduction|polling|vote|subscribe|"
-    r"topik yang akan|webinar akan|rekaman|pendekatan materi|q\s*&\s*a|tanya jawab|"
+    r"topik yang akan|webinar akan|rekaman|pendekatan materi|"
     r"ajak partisipasi|sapa penonton|ucapan|disclaimer|house\s*keeping)"
 )
 
@@ -123,7 +124,7 @@ def _validate_clips(
     min_score: int,
     video_duration: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Sanitize, deduplicate, and cap the clip list — strict quality gate."""
+    """Sanitize, deduplicate, and cap the clip list — lenient quality gate."""
     valid: list[dict[str, Any]] = []
     seen_ranges: list[tuple[float, float]] = []
 
@@ -141,24 +142,20 @@ def _validate_clips(
     for c in scored_clips:
         s, e = float(c["start"]), float(c["end"])
         dur = e - s
-        if dur < min_dur * 0.7 or dur > max_dur * 1.3:
-            continue  # strict duration tolerance
+        if dur < min_dur * 0.3 or dur > max_dur * 2.0:
+            continue  # lenient duration tolerance
         if video_duration and e > video_duration + 2:
             continue
         score = c["_score"]
-        if score < min_score:
-            continue  # strict score threshold — no softening
-        # Filter out low-value clips (intros, outros, etc.)
-        if _is_low_value_clip(c):
-            log("DEBUG", f"Filtered low-value clip: {c.get('title', '?')}")
-            continue
-        # Strict overlap check — no significant overlap allowed
+        if score < min_score * 0.5:
+            continue  # lenient score threshold
+        # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))
             shorter = min(e1 - s1, e2 - s2)
             return overlap / shorter if shorter > 0 else 0
 
-        overlaps = any(_overlap_ratio(s, e, rs, re) > 0.2 for rs, re in seen_ranges)
+        overlaps = any(_overlap_ratio(s, e, rs, re) > 0.7 for rs, re in seen_ranges)
         if overlaps:
             continue
         seen_ranges.append((s, e))
@@ -172,6 +169,7 @@ def _validate_clips(
         c.setdefault("score_easy", 0)
         c.setdefault("score_informative", 0)
         c.setdefault("score_energy", 0)
+        c.setdefault("score_newsworthy", 0)
         c["clip_score"] = score
         c.pop("_score", None)
         c.pop("engagement_score", None)
@@ -217,8 +215,8 @@ def _merge_chunk_clips(
             es, ee = float(existing["start"]), float(existing["end"])
             overlap = max(0, min(e, ee) - max(s, es))
             shorter = min(e - s, ee - es)
-            if shorter > 0 and overlap / shorter > 0.3:
-                # Keep the higher-scoring one (stricter dedup = more clips kept)
+            if shorter > 0 and overlap / shorter > 0.7:
+                # Keep the higher-scoring one
                 if _compute_clip_score(clip) > _compute_clip_score(existing):
                     deduped[i] = clip
                 is_dup = True
@@ -315,9 +313,9 @@ def find_clips(
     for idx, chunk in enumerate(chunks, 1):
         chunk_start = chunk[0]["start"]
         chunk_end = chunk[-1]["end"]
-        # Conservative per-chunk budget — quality over quantity
-        clips_per_chunk = max(5, math.ceil(max_clips / max(n_chunks, 1) * 1.2))
-        clips_per_chunk = min(clips_per_chunk, 15)
+        # Generous per-chunk budget — maximize output
+        clips_per_chunk = max(10, math.ceil(max_clips / max(n_chunks, 1) * 1.5))
+        clips_per_chunk = min(clips_per_chunk, max_clips)
 
         transcript = _build_transcript_text(chunk)
         chunk_info = ""
@@ -325,7 +323,7 @@ def find_clips(
             chunk_info = (
                 f"Ini bagian {idx}/{n_chunks} video "
                 f"({chunk_start:.0f}s-{chunk_end:.0f}s). "
-                f"Pilih HANYA momen terbaik di bagian ini. Jangan paksakan kuantitas."
+                f"Ekstrak SEMUA momen menarik di bagian ini — setiap subtopik yang layak harus jadi klip."
             )
             log("INFO", f"Chunk {idx}/{n_chunks}: {chunk_start:.0f}s → {chunk_end:.0f}s "
                        f"({len(chunk)} segments, asking for ≤{clips_per_chunk} clips)")

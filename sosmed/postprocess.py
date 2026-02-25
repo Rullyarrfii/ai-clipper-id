@@ -45,7 +45,14 @@ def _get_video_info(video_path: str) -> dict[str, Any]:
             capture_output=True, text=True, check=True,
         )
         data = json.loads(result.stdout)
-        stream = data.get("streams", [{}])[0]
+        streams = data.get("streams", [])
+        if not streams:
+            log("WARN", f"ffprobe found no video streams in {video_path}")
+            return {
+                "width": 0, "height": 0, "fps": 0,
+                "duration": 0, "has_audio": False, "has_video": False,
+            }
+        stream = streams[0]
         fmt = data.get("format", {})
 
         w = int(stream.get("width", 0))
@@ -75,13 +82,13 @@ def _get_video_info(video_path: str) -> dict[str, Any]:
 
         return {
             "width": w, "height": h, "fps": fps,
-            "duration": dur, "has_audio": has_audio,
+            "duration": dur, "has_audio": has_audio, "has_video": True,
         }
     except Exception as e:
         log("WARN", f"ffprobe failed: {e}")
         return {
-            "width": 1920, "height": 1080, "fps": 30.0,
-            "duration": 0, "has_audio": True,
+            "width": 0, "height": 0, "fps": 0,
+            "duration": 0, "has_audio": False, "has_video": False,
         }
 
 
@@ -107,6 +114,9 @@ def _postprocess_one(
 
     # Get info about the raw clip
     info = _get_video_info(raw_clip_path)
+    if not info.get("has_video", True):
+        log("WARN", f"Clip #{clip.get('rank')} has no video stream — skipping postprocess")
+        return raw_clip_path
     src_w, src_h = info["width"], info["height"]
     clip_duration = info["duration"]
     has_audio = info["has_audio"]
@@ -187,8 +197,22 @@ def _postprocess_one(
     filter_parts: list[str] = []
 
     if vfilters:
-        vf_chain = ",".join(vfilters)
-        filter_parts.append(f"[0:v]{vf_chain}[vout]")
+        # Chain filters with explicit pad labels to avoid FFmpeg syntax errors
+        # When chaining multiple filters, each needs explicit input/output pads
+        if len(vfilters) == 1:
+            # Single filter: [0:v]filter[vout]
+            filter_parts.append(f"[0:v]{vfilters[0]}[vout]")
+        else:
+            # Multiple filters: [0:v]filter1[tmp1];[tmp1]filter2[tmp2];...;[tmpN]filterN[vout]
+            chain_parts = ["[0:v]" + vfilters[0] + "[tmp0]"]
+            for i, vf in enumerate(vfilters[1:], start=1):
+                if i == len(vfilters) - 1:
+                    # Last filter outputs to [vout]
+                    chain_parts.append(f"[tmp{i-1}]{vf}[vout]")
+                else:
+                    # Intermediate filters output to [tmpN]
+                    chain_parts.append(f"[tmp{i-1}]{vf}[tmp{i}]")
+            filter_parts.append(";".join(chain_parts))
 
     if filter_parts:
         full_filter = ";".join(filter_parts)

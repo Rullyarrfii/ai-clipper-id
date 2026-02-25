@@ -56,8 +56,8 @@ def main() -> None:
                     help="Max clip duration in seconds (default: 60)")
     ap.add_argument("--max-clips", type=int, default=MAX_CLIPS_HARD_LIMIT,
                     help=f"Maximum number of clips (default: {MAX_CLIPS_HARD_LIMIT})")
-    ap.add_argument("--min-score", type=int, default=70,
-                    help="Minimum engagement score to keep a clip (default: 70)")
+    ap.add_argument("--min-score", type=int, default=40,
+                    help="Minimum engagement score to keep a clip (default: 40)")
     ap.add_argument("--device", default="auto",
                     choices=["auto", "cuda", "cpu"],
                     help="Compute device (default: auto)")
@@ -141,15 +141,16 @@ def main() -> None:
         print()
         
         # Summary table
-        print(f"{BOLD}{'#':<4} {'Score':<6} {'E/I/H':<10} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
-        print("─" * 80)
+        print(f"{BOLD}{'#':<4} {'Score':<6} {'E/I/N/H':<14} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+        print("─" * 85)
         for c in clips:
             d = c["end"] - c["start"]
             se = c.get("score_easy", "?")
             si = c.get("score_informative", "?")
+            sn = c.get("score_newsworthy", "?")
             sh = c.get("score_energy", "?")
             print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
-                  f"{se}/{si}/{sh}  "
+                  f"{se}/{si}/{sn}/{sh}  "
                   f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
         print()
         
@@ -318,15 +319,16 @@ def main() -> None:
         sys.exit(0)
 
     # Summary table
-    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'E/I/H':<10} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
-    print("─" * 80)
+    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'E/I/N/H':<14} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+    print("─" * 85)
     for c in clips:
         d = c["end"] - c["start"]
         se = c.get("score_easy", "?")
         si = c.get("score_informative", "?")
+        sn = c.get("score_newsworthy", "?")
         sh = c.get("score_energy", "?")
         print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
-              f"{se}/{si}/{sh}  "
+              f"{se}/{si}/{sn}/{sh}  "
               f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
     print()
 

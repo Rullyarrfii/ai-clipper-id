@@ -261,47 +261,47 @@ def generate_title_overlay(
     duration: float = 3.0,
     font_name: str = "Arial",
 ) -> str:
-    """Generate an ASS overlay for the clip title with clean pop-in animation.
+    """Generate ASS title overlay with simple scale+fade animation.
 
-    Simple, punchy title card: scales up from 0 → overshoots → settles,
-    holds, then fades out.  No per-letter gimmicks — the whole title
-    animates as one unit for a clean, professional look.
+    Single text element, centered on screen. Fades in while scaling up,
+    then fades out while scaling down.
 
     Args:
-        title: The title text to display
-        play_res_x: Video width
-        play_res_y: Video height
-        duration: How long the title appears (default 3.0s)
-        font_name: Font family
+        title: The title text to display (single element, no wrapping).
+        play_res_x: Video width.
+        play_res_y: Video height.
+        duration: How long the title appears (default 3.0s).
+        font_name: Font family.
 
     Returns:
-        Complete ASS subtitle file as a string
+        Complete ASS subtitle file as a string.
     """
-    # ── Sizing — big & bold, tight to edges ──────────────────────────────────
+    # ── Sizing ───────────────────────────────────────────────────────────────
     aspect = play_res_x / play_res_y
     if aspect < 1.0:
-        # Portrait: size relative to width so it fills the narrow frame
         font_size = int(play_res_x * 0.09)
     else:
-        # Landscape: size relative to height
         font_size = int(play_res_y * 0.10)
 
-    # Tight horizontal margins — 4 % from each edge
-    margin_h = int(play_res_x * 0.04)
-
-    # Outline / shadow proportional to font
     outline_w = max(3, int(font_size * 0.08))
     shadow_d = max(2, outline_w // 2)
-
-    # Vertical position: roughly 30 % from top
-    margin_v = int(play_res_y * 0.30)
 
     # ── Colors ───────────────────────────────────────────────────────────────
     c_text = _rgb_to_ass(255, 255, 255)
     c_outline = _rgb_to_ass(0, 0, 0)
     c_shadow = _rgb_to_ass(0, 0, 0, 120)
 
-    # ── ASS document ─────────────────────────────────────────────────────────
+    # ── Center positioning (30% from top) ────────────────────────────────────
+    cx = play_res_x // 2
+    cy = int(play_res_y * 0.30)
+
+    # ── Timing ───────────────────────────────────────────────────────────────
+    fade_in_dur = int(0.4 * 1000)           # 400 ms fade in
+    fade_out_start = int((duration - 0.4) * 1000)
+    fade_out_dur = int(0.4 * 1000)          # 400 ms fade out
+    margin_h = round(play_res_x * 4.0 / 100.0)
+
+    # ── ASS header ───────────────────────────────────────────────────────────
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -315,45 +315,40 @@ def generate_title_overlay(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        # alignment 8 = top-center
+        # alignment 5 = center-center
         f"Style: Title,{font_name},{font_size},"
         f"{c_text},{c_text},{c_outline},{c_shadow},"
-        f"-1,0,0,0,100,100,1,0,1,{outline_w},{shadow_d},"
-        f"8,{margin_h},{margin_h},{margin_v},1\n"
+        f"-1,0,0,0,100,100,0,0,1,{outline_w},{shadow_d},"
+        f"5,{margin_h},{margin_h},0,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, "
         "MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
+    # ── Single dialogue event ────────────────────────────────────────────────
+    # Animation: fade in while scaling from 50% to 100%,
+    #            then fade out while scaling from 100% to 50%
     t0 = _seconds_to_ass_time(0.0)
     t1 = _seconds_to_ass_time(duration)
-
-    # ── Animation: whole-title pop-in → hold → fade-out ──────────────────────
-    #
-    # Phase 1  0–250 ms   scale 0→115 %, alpha FF→00  (burst in, overshoot)
-    # Phase 2  250–400 ms scale 115→100 %              (settle back)
-    # Phase 3  hold
-    # Phase 4  last 400 ms alpha 00→FF                 (fade out)
-    #
-    fade_out_ms = int((duration - 0.4) * 1000)
-    end_ms = int(duration * 1000)
-
+    
     anim = (
-        # Start invisible & tiny
-        "{\\alpha&HFF\\fscx0\\fscy0"
-        # Phase 1: burst in with overshoot
-        "\\t(0,250,\\alpha&H00\\fscx115\\fscy115)"
-        # Phase 2: settle to 100 %
-        "\\t(250,400,\\fscx100\\fscy100)"
-        # Phase 4: fade out
-        f"\\t({fade_out_ms},{end_ms},\\alpha&HFF)"
-        "}"
+        f"{{\\pos({cx},{cy})"
+        f"\\an5"
+        # Initial state: invisible, scale 50%
+        f"\\alpha&HFF\\fscx50\\fscy50"
+        # Fade in + scale up to 100%
+        f"\\t(0,{fade_in_dur},"
+        f"\\alpha&H00\\fscx100\\fscy100)"
+        # Fade out + scale down to 50%
+        f"\\t({fade_out_start},{fade_out_start + fade_out_dur},"
+        f"\\alpha&HFF\\fscx50\\fscy50)"
+        f"}}"
     )
 
-    dialogue = f"Dialogue: 0,{t0},{t1},Title,,0,0,0,,{anim}{title}\n"
+    event = f"Dialogue: 0,{t0},{t1},Title,,0,0,0,,{anim}{title}"
 
-    return header + dialogue
+    return header + event + "\n"
 
 
 def get_clip_words(

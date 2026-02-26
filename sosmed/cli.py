@@ -72,8 +72,8 @@ def main() -> None:
                     help="VAD speech padding in ms (default: 200)")
     ap.add_argument("--batch", type=int, default=16,
                     help="Whisper batch size (default: 16; lower if OOM)")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="Parallel ffmpeg workers (default: 4)")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="(ignored) previously used for parallel ffmpeg workers; extraction and postprocess now run sequentially")
     ap.add_argument("--chunk-duration", type=float, default=360.0,
                     help="LLM chunk duration in seconds (default: 360)")
     ap.add_argument("--chunk-overlap", type=float, default=60.0,
@@ -197,7 +197,6 @@ def main() -> None:
                 clips,
                 segments,
                 output_dir=output_dir,
-                max_workers=max(1, args.workers // 2),
                 subtitles=args.subtitles,
                 subtitle_position=args.subtitle_position,
             )
@@ -359,7 +358,6 @@ def main() -> None:
             clips,
             segments,  # original segments for word timestamps
             output_dir=output_dir,
-            max_workers=max(1, args.workers // 2),
             subtitles=args.subtitles,
             subtitle_position=args.subtitle_position,
         )

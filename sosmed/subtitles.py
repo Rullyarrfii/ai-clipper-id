@@ -261,10 +261,10 @@ def generate_title_overlay(
     duration: float = 3.0,
     font_name: str = "Arial",
 ) -> str:
-    """Generate ASS title overlay with simple scale+fade animation.
+    """Generate ASS title overlay without any animation.
 
-    Single text element, centered on screen. Fades in while scaling up,
-    then fades out while scaling down.
+    Single text element centered on screen. The title appears for the
+    full duration with no scaling or fading effects (static display).
 
     Args:
         title: The title text to display (single element, no wrapping).
@@ -296,9 +296,15 @@ def generate_title_overlay(
     cy = int(play_res_y * 0.30)
 
     # ── Timing ───────────────────────────────────────────────────────────────
-    fade_in_dur = int(0.4 * 1000)           # 400 ms fade in
-    fade_out_start = int((duration - 0.4) * 1000)
-    fade_out_dur = int(0.4 * 1000)          # 400 ms fade out
+    # Compute fade-out parameters. we always start fully opaque and then
+    # transition to transparent near the end of the title duration.  For very
+    # short clips the fade is shortened proportionally so it remains visible.
+    if duration < 1.5:
+        fade_out_dur = max(100, int(duration * 200))   # ~20% of clip, in ms
+    else:
+        fade_out_dur = int(0.4 * 1000)                 # 400 ms default
+    fade_out_start = max(0, int((duration - (fade_out_dur / 1000)) * 1000))
+
     margin_h = round(play_res_x * 4.0 / 100.0)
 
     # ── ASS header ───────────────────────────────────────────────────────────
@@ -327,22 +333,15 @@ def generate_title_overlay(
     )
 
     # ── Single dialogue event ────────────────────────────────────────────────
-    # Animation: fade in while scaling from 50% to 100%,
-    #            then fade out while scaling from 100% to 50%
+    # Centered text with fade-out near the end.  We keep the alpha at 0
+    # (opaque) initially, then animate to &HFF (transparent).
     t0 = _seconds_to_ass_time(0.0)
     t1 = _seconds_to_ass_time(duration)
-    
+
     anim = (
-        f"{{\\pos({cx},{cy})"
-        f"\\an5"
-        # Initial state: invisible, scale 50%
-        f"\\alpha&HFF\\fscx50\\fscy50"
-        # Fade in + scale up to 100%
-        f"\\t(0,{fade_in_dur},"
-        f"\\alpha&H00\\fscx100\\fscy100)"
-        # Fade out + scale down to 50%
-        f"\\t({fade_out_start},{fade_out_start + fade_out_dur},"
-        f"\\alpha&HFF\\fscx50\\fscy50)"
+        f"{{\\pos({cx},{cy})\\an5"
+        f"\\alpha&H00"
+        f"\\t({fade_out_start},{fade_out_start + fade_out_dur},\\alpha&HFF)"
         f"}}"
     )
 

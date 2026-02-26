@@ -8,7 +8,7 @@ An intelligent video-to-clips converter that uses AI transcription and LLM analy
 - 🧠 **AI-Powered Clip Extraction** — LLM automatically decides which segments are most engaging (max 100 clips)
 - 🇮🇩 **Indonesian Optimized** — Pre-filters noise, filler words, and duplicates tuned for Bahasa Indonesia
 - 🎵 **Music/Lyrics Filtering** — Automatically filters out pure instrumental sections and background music from clip analysis
-- ⚡ **Parallel Processing** — Extracts multiple clips simultaneously using FFmpeg
+- ⚡ **Sequential FFmpeg Processing** — Clips are extracted and post‑processed one at a time to avoid running multiple FFmpeg instances concurrently
 - 🔌 **Multi-LLM Support** — Works with OpenRouter, Anthropic, OpenAI, or Ollama
 - 📊 **Smart Ranking** — Clips are ranked by engagement score with compelling hooks extracted
 - 📱 **Auto Portrait Reframing** — Intelligently reframes landscape video to 9:16 portrait with face detection

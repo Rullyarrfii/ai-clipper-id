@@ -38,9 +38,19 @@ def _extract_one(
 ) -> str:
     """Extract a single clip with ffmpeg (frame-accurate). Returns output file path.
 
-    Uses *output-seeking* (``-ss`` after ``-i``) with ``-copyts`` so the
-    seek is frame-accurate rather than snapping to keyframes.  A higher
-    default padding (0.35 s) ensures we don't clip into speech.
+    Historically this function used ``-c:v copy`` and relied on "output
+    seeking" (``-ss`` after ``-i``) plus ``-copyts``.  That worked for
+    keyframe-aligned cuts but produced files whose internal start timestamp
+    matched the nearest preceding I-frame.  When the first keyframe was
+    several seconds past the requested start the resulting clip would appear
+    to freeze for those seconds and even report a non-zero ``start`` value
+    when inspected with ffprobe.
+
+    To guarantee accurate trimming regardless of keyframe placement we now
+    re-encode the video with libx264.  It's a little slower, but ensures the
+    output begins at the correct frame and the player doesn't show a
+    multi-second freeze.  Padding is still applied to avoid cutting into
+    speech.
     """
     start = max(0.0, clip["start"] - padding)
     end = clip["end"] + padding
@@ -50,7 +60,12 @@ def _extract_one(
     safe = re.sub(r"\s+", "_", safe)[:50]
     out_path = output_dir / f"rank{clip['rank']:02d}_{safe}.mp4"
 
-    # -i first, then -ss/-t  → output seeking = frame-accurate
+    # -i first, then -ss/-t  → output seeking. we re-encode rather than copy
+    # so that trimming is frame-accurate even when the desired start doesn't
+    # coincide with a keyframe. previously we used -c:v copy which caused
+    # clips to begin at the nearest preceding keyframe (often several seconds
+    # early) and the file header retained the original timestamp, leading to
+    # what looked like a freeze for the first 2–3 seconds.
     base_cmd = [
         get_ffmpeg(), "-y", "-hide_banner",
         "-i", video_path,
@@ -59,7 +74,9 @@ def _extract_one(
         "-map", "0:v:0",
         "-map", "0:a:0?",
     ]
-    encode_args = ["-c:v", "copy"]
+    # encode with libx264 so ffmpeg will decode up to the requested start
+    # and the resulting clip has correct timing/stamps.
+    encode_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "23"]
     audio_flags = ["-c:a", "aac", "-b:a", "128k"]
     output_flags = ["-movflags", "+faststart", "-loglevel", "error", str(out_path)]
 

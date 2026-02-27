@@ -31,7 +31,7 @@ sosmed/
 │   ├── utils.py         # Logging, constants, prompts
 │   └── llm/             # LLM analysis backends
 ├── clips/
-│   └── clips.json       # Generated clip metadata and timestamps
+│   └── clips.json       # Generated clip metadata and timestamps (now includes clip filenames)
 └── videos/              # Input video directory
 ```
 
@@ -161,7 +161,7 @@ The script generates a `clips/clips.json` file with extracted clips:
 ]
 ```
 
-**Clip files** are output as `rank01_Title_final.mp4` (post-processed) or `rank01_Title.mp4` (raw).
+**Clip files** are output as `rank01_Title_final.mp4` (post-processed) or `rank01_Title.mp4` (raw). The corresponding `clips.json` metadata now includes a `filename` field for each clip so you can easily match entries to files.
 
 **Fields:**
 - `rank` — Priority ranking (1 = highest engagement)

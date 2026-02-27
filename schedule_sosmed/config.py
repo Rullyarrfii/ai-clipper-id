@@ -13,30 +13,27 @@ CLIPS_FOLDER = os.path.join(BASE_DIR, "clips")   # <-- CHANGE THIS
 SCHEDULE_TIMES = ["06:00", "10:00", "14:00", "18:00", "20:00", "23:00"]
 
 # ── Instagram ────────────────────────────────────────────────
-INSTAGRAM_USERNAME = "samuelmat19@gmail.com"
-INSTAGRAM_PASSWORD = "!Wonderfoo4258"
+INSTAGRAM_CREDENTIAL_FILE = os.path.join(BASE_DIR, "ig_cred.json")  # JSON with "username" and "password" fields
 INSTAGRAM_SESSION_FILE = os.path.join(BASE_DIR, "ig_session.json")    # saved after first login
 
 # ── YouTube ──────────────────────────────────────────────────
 YOUTUBE_CLIENT_SECRETS = os.path.join(BASE_DIR, "client_secrets.json")  # downloaded from Google Cloud
 YOUTUBE_TOKEN_FILE     = os.path.join(BASE_DIR, "yt_token.pickle")      # saved after first auth
 YOUTUBE_CATEGORY_ID    = "28"                   # 22 = People & Blogs
-YOUTUBE_CHANNEL_HANDLE = "@samuel.koesnadi"     # required: scheduler validates authenticated channel
-YOUTUBE_PRIVACY_STATUS = "public"               # public | private | unlisted
-YOUTUBE_DEFAULT_LANGUAGE = "id"
-YOUTUBE_DEFAULT_AUDIO_LANGUAGE = "id"
-YOUTUBE_LICENSE = "youtube"                     # youtube | creativeCommon
+YOUTUBE_CHANNEL_HANDLE = "@samuel.koesnadi"     # @yourchannelhandle (optional, for validation)
+YOUTUBE_PRIVACY_STATUS = "public"               # public, unlisted, or private
+YOUTUBE_DEFAULT_LANGUAGE = "id"                 # id = Indonesian
+YOUTUBE_DEFAULT_AUDIO_LANGUAGE = "id"           # id = Indonesian
+YOUTUBE_LICENSE = "youtube"                     # youtube or creativeCommon
 YOUTUBE_EMBEDDABLE = True
 YOUTUBE_PUBLIC_STATS_VIEWABLE = True
-YOUTUBE_NOTIFY_SUBSCRIBERS = True
+YOUTUBE_NOTIFY_SUBSCRIBERS = False              # Don't spam subscribers for each upload
 YOUTUBE_SELF_DECLARED_MADE_FOR_KIDS = False
 
 # ── TikTok ───────────────────────────────────────────────────
 TIKTOK_COOKIES_FILE = os.path.join(BASE_DIR, "tiktok_cookies.txt")      # exported from browser
 
 # ── FFmpeg video output settings ────────────────────────────
-FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
-FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 VIDEO_RESOLUTION = "1080:1920"   # vertical 9:16
 VIDEO_FPS        = 30
 MAX_DURATION_YT  = 180           # YouTube Shorts max = 3 min
@@ -50,3 +47,7 @@ ENABLE_TIKTOK    = True
 
 # ── Delete video file after successful upload to ALL platforms?
 DELETE_AFTER_UPLOAD = True
+
+# ── FFmpeg paths ─────────────────────────────────────────────
+FFMPEG_BIN = "ffmpeg"    # or full path like "C:\\ffmpeg\\bin\\ffmpeg.exe"
+FFPROBE_BIN = "ffprobe"  # or full path like "C:\\ffmpeg\\bin\\ffprobe.exe"

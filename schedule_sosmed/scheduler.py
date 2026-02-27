@@ -34,7 +34,7 @@ from tiktok_uploader.upload import upload_video as tiktok_upload_video
 
 from config import (
     CLIPS_FOLDER,
-    INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_SESSION_FILE,
+    INSTAGRAM_CREDENTIAL_FILE, INSTAGRAM_SESSION_FILE,
     YOUTUBE_CLIENT_SECRETS, YOUTUBE_TOKEN_FILE, YOUTUBE_CATEGORY_ID,
     YOUTUBE_CHANNEL_HANDLE,
     YOUTUBE_PRIVACY_STATUS,
@@ -243,7 +243,11 @@ def get_ig_client() -> IGClient:
         except LoginRequired:
             log.warning("Instagram session expired, re-logging in ...")
     
-    cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+    # Load credentials from JSON file
+    with open(INSTAGRAM_CREDENTIAL_FILE, "r", encoding="utf-8") as f:
+        creds = json.load(f)
+    
+    cl.login(creds["username"], creds["password"])
     cl.dump_settings(INSTAGRAM_SESSION_FILE)
     return cl
 

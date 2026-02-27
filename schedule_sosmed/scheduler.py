@@ -30,7 +30,7 @@ import googleapiclient.discovery
 import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
 from googleapiclient.http import MediaFileUpload
-from tiktok_uploader.upload import upload_video as tiktok_upload_video
+from tiktok_uploader.upload import TikTokUploader
 
 from config import (
     CLIPS_FOLDER,
@@ -336,27 +336,101 @@ def probe_video_info(video_path: str) -> tuple[int, int, float] | tuple[None, No
         return None, None, None
 
 
-def ensure_shorts_eligible(video_path: str) -> bool:
+def pad_video_to_vertical(video_path: str) -> str | None:
+    """Pad a landscape clip with black bars to make it taller than it is
+    wide.
+
+    The output file is created alongside the original with a
+    ``_padded`` suffix.  We choose a target height equal to twice the
+    original width (a 1:2 aspect) which is safely taller than the
+    original.  If FFmpeg fails or the resulting video still isn't vertical
+    we return ``None``.
+    """
+    base, ext = os.path.splitext(video_path)
+    out_path = f"{base}_padded{ext}"
+
+    # get original dimensions
+    w, h, _ = probe_video_info(video_path)
+    if w is None or h is None:
+        return None
+
+    target_h = int(w * 2)
+    cmd = [
+        FFMPEG_EXECUTABLE,
+        "-y",
+        "-i",
+        video_path,
+        "-vf",
+        f"pad={w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black",
+        "-c:a",
+        "copy",
+        out_path,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except Exception as e:
+        log.error(f"❌ Could not pad video to vertical: {e}")
+        return None
+
+    # verify result is vertical
+    w2, h2, _ = probe_video_info(out_path)
+    if w2 is None or h2 is None or h2 <= w2:
+        log.error(
+            "❌ Padding did not produce a vertical video (still "
+            f"{w2}x{h2})."
+        )
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+        return None
+
+    log.info(f"🔲 Padded {video_path} -> {out_path} with black bars to vertical")
+    return out_path
+
+
+def ensure_shorts_eligible(video_path: str) -> str | None:
+    """Verify (and if possible fix) a clip so it can be uploaded as a
+    YouTube Short.
+
+    Returns the path that should be used for the upload.  ``None`` means
+    the clip cannot be used.
+    """
     width, height, duration = probe_video_info(video_path)
     if width is None or height is None or duration is None:
-        return False
-
-    if height <= width:
-        log.error(
-            f"❌ YouTube Shorts requires vertical video. Current size is {width}x{height}."
-        )
-        return False
+        return None
 
     if duration > 180:
         log.error(
             f"❌ YouTube Shorts max duration is 180s. Current duration is {duration:.2f}s."
         )
-        return False
+        return None
 
-    return True
+    # if clip is landscape, pad with black bars instead of rotating
+    if height <= width:
+        log.warning(
+            f"📐 Video is not vertical ({width}x{height}); padding with black bars"
+        )
+        padded = pad_video_to_vertical(video_path)
+        if not padded:
+            # helper already logged the error
+            return None
+        return ensure_shorts_eligible(padded)
+
+    # at this point we know height > width and duration is OK
+    return video_path
 
 
 def generate_thumbnail(video_path: str, width: int, height: int, suffix: str) -> str | None:
+    """Create a still image from ``video_path`` at the requested size.
+
+    The thumbnail is scaled to fit within ``width``x``height`` while preserving
+    the original aspect ratio.  If the scaled frame does not exactly match the
+    target dimensions we pad with black bars so the resulting image always has
+    the precise size TikTok, Instagram and YouTube expect.  This means a
+    landscape video will receive black bars above and below when a vertical
+    thumbnail is requested.
+    """
     thumbs_dir = os.path.join(CLIPS_FOLDER, "_thumbnails")
     os.makedirs(thumbs_dir, exist_ok=True)
 
@@ -406,8 +480,14 @@ def upload_youtube(video_path: str, clip: dict) -> bool:
         if not validate_youtube_channel(yt):
             return False
 
-        if not ensure_shorts_eligible(video_path):
+        new_path = ensure_shorts_eligible(video_path)
+        if not new_path:
             return False
+        # if the helper returned a different file we need to update
+        # the path for both the thumbnail step and the upload call.
+        if new_path != video_path:
+            log.debug(f"Using converted video file for upload: {new_path}")
+            video_path = new_path
 
         thumbnail_path = generate_thumbnail(video_path, 1280, 720, "youtube")
         if not thumbnail_path:
@@ -470,15 +550,72 @@ def upload_youtube(video_path: str, clip: dict) -> bool:
         return False
 
 
+
+def ensure_vertical(video_path: str) -> str | None:
+    """Pad a landscape video with black bars until it is taller than it is wide.
+
+    TikTok favors vertical uploads; if the source clip is wider than it is
+    tall we call ``pad_video_to_vertical`` (which is already used for Instagram
+    thumbnails) and recurse until the result is vertical.  ``None`` is
+    returned on failure.
+    """
+    w, h, _ = probe_video_info(video_path)
+    if w is None or h is None:
+        return None
+    if w > h:
+        log.warning(
+            f"📐 Video is not vertical ({w}x{h}); padding with black bars"
+        )
+        padded = pad_video_to_vertical(video_path)
+        if not padded:
+            return None
+        return ensure_vertical(padded)
+    return video_path
+
+
 def upload_tiktok(video_path: str, clip: dict) -> bool:
+    """Upload a clip using the tiktok-uploader library with TikTokUploader class.
+
+    This uses the class-based API which provides better control over the upload
+    process and proper context management.
+    """
     try:
-        thumbnail_path = generate_thumbnail(video_path, 1080, 1920, "tiktok")
-        if not thumbnail_path:
+        # ensure the clip itself is vertical before uploading
+        video_path = ensure_vertical(video_path)
+        if not video_path:
             return False
 
         if not os.path.exists(TIKTOK_COOKIES_FILE):
             log.error(f"❌ TikTok failed: cookies file not found: {TIKTOK_COOKIES_FILE}")
             log.error("   Re-export cookies from tiktok.com and save to that exact path.")
+            return False
+
+        # simple expiry check: netscape format stores expiration as field 5
+        def cookies_expired(path: str) -> bool:
+            now = time.time()
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        parts = line.split("\t")
+                        if len(parts) >= 7:
+                            name = parts[5]
+                            try:
+                                expires = int(parts[4])
+                            except ValueError:
+                                continue
+                            if name in ("sessionid", "ttwid") and expires < now:
+                                return True
+            except Exception:
+                # if we can't read/parse just fall back to assuming expired
+                return True
+            return False
+
+        if cookies_expired(TIKTOK_COOKIES_FILE):
+            log.error("❌ TikTok failed: cookies file appears expired.")
+            log.error("   Re-login to tiktok.com, export fresh cookies (Netscape), overwrite tiktok_cookies.txt, then retry.")
             return False
 
         with open(TIKTOK_COOKIES_FILE, "r", encoding="utf-8") as f:
@@ -489,15 +626,29 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
             log.error("   Open tiktok.com in browser, login, then export cookies again (Netscape format).")
             return False
 
-        tiktok_upload_video(
-            filename=video_path,
-            description=clip["caption"][:2200],
-            cookies=TIKTOK_COOKIES_FILE,
-            cover=thumbnail_path,
-        )
+        # build video dict for the uploader with thumbnail
+        thumbnail_path = generate_thumbnail(video_path, 1080, 1920, "tiktok")
+        if not thumbnail_path:
+            return False
+
+        video_dict = {
+            "path": video_path,
+            "description": clip.get("caption", "")[:2200],
+            "cover": thumbnail_path,
+        }
+
+        # upload using TikTokUploader class
+        uploader = TikTokUploader(cookies=TIKTOK_COOKIES_FILE, headless=True)
+        failed = uploader.upload_videos([video_dict], skip_interactivity=True)
+
+        if failed:
+            log.error(f"❌ TikTok upload failed: {failed}")
+            return False
+
         log.info(f"✅ TikTok: {clip['title']}")
         log.info(f"🖼️ TikTok cover uploaded: {thumbnail_path}")
         return True
+
     except Exception as e:
         log.error(f"❌ TikTok failed: {e}")
         if "No valid authentication source found" in str(e):
@@ -527,14 +678,27 @@ def make_post_job(slot_time: str, tier: int, label: str):
         log.info(f"   File      : {clip.get('filename')}")
 
         results = {}
+        # Run each platform upload in its own try/except to ensure all are attempted
         if ENABLE_INSTAGRAM:
-            results["instagram"] = upload_instagram(video_path, clip)
+            try:
+                results["instagram"] = upload_instagram(video_path, clip)
+            except Exception as e:
+                log.error(f"Exception during Instagram upload: {e}")
+                results["instagram"] = False
         if ENABLE_YOUTUBE:
-            results["youtube"]   = upload_youtube(video_path, clip)
+            try:
+                results["youtube"] = upload_youtube(video_path, clip)
+            except Exception as e:
+                log.error(f"Exception during YouTube upload: {e}")
+                results["youtube"] = False
         if ENABLE_TIKTOK:
-            results["tiktok"]    = upload_tiktok(video_path, clip)
+            try:
+                results["tiktok"] = upload_tiktok(video_path, clip)
+            except Exception as e:
+                log.error(f"Exception during TikTok upload: {e}")
+                results["tiktok"] = False
 
-        ok = sum(results.values())
+        ok = sum(bool(v) for v in results.values())
         log.info(f"📊 {ok}/{len(results)} platforms succeeded — {results}")
 
         if ok > 0:
@@ -566,12 +730,12 @@ def run_test_post(filename: str):
         return
 
     results = {}
+    if ENABLE_TIKTOK:
+        results["tiktok"] = upload_tiktok(video_path, clip)
     if ENABLE_INSTAGRAM:
         results["instagram"] = upload_instagram(video_path, clip)
     if ENABLE_YOUTUBE:
         results["youtube"] = upload_youtube(video_path, clip)
-    if ENABLE_TIKTOK:
-        results["tiktok"] = upload_tiktok(video_path, clip)
 
     ok = sum(results.values())
     log.info(f"📊 Test result: {ok}/{len(results)} platforms succeeded — {results}")

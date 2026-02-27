@@ -13,6 +13,7 @@
 # ============================================================
 
 import os
+import time
 from config import TIKTOK_COOKIES_FILE
 
 
@@ -34,15 +35,35 @@ def check_cookies_file(path: str) -> bool:
         print("   Try re-exporting your cookies after logging in to tiktok.com")
         return False
 
+    # simple expiration check (networkscape format field 5)
+    now = time.time()
+    for line in content.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            name = parts[5]
+            try:
+                exp = int(parts[4])
+            except ValueError:
+                continue
+            if name in required and exp < now:
+                print(f"⚠️  Cookie '{name}' appears expired.")
+                print("   Re-export fresh cookies from tiktok.com")
+                return False
+
     return True
 
 
 def test_tiktok_upload(dry_run=True):
     """
-    Attempts a test upload with tiktok-uploader.
-    Set dry_run=True to only validate without actually uploading.
+    Attempts a test upload with tiktok-uploader (class-based API).
+
+    This library uses Playwright to automate TikTok uploads via a browser.
+    ``dry_run`` avoids touching TikTok and just confirms the library is
+    importable.
     """
-    from tiktok_uploader.upload import upload_video
+    from tiktok_uploader.upload import TikTokUploader
 
     if dry_run:
         print("ℹ️  dry_run=True — skipping actual upload, only checking library import.")
@@ -58,12 +79,14 @@ def test_tiktok_upload(dry_run=True):
         print("   Create a short test video or set dry_run=True")
         return
 
-    result = upload_video(
-        filename=test_video,
+    uploader = TikTokUploader(cookies=TIKTOK_COOKIES_FILE)
+    result = uploader.upload_video(
+        test_video,
         description="Test upload — will delete #test",
-        cookies=TIKTOK_COOKIES_FILE,
+        skip_interactivity=True,
     )
-    print(f"✅ Test upload result: {result}")
+    print(f"✅ Upload result: {result}")
+
 
 
 if __name__ == "__main__":

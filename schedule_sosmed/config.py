@@ -31,6 +31,7 @@ YOUTUBE_NOTIFY_SUBSCRIBERS = False              # Don't spam subscribers for eac
 YOUTUBE_SELF_DECLARED_MADE_FOR_KIDS = False
 
 # ── TikTok ───────────────────────────────────────────────────
+# ── TikTok ───────────────────────────────────────────────────
 TIKTOK_COOKIES_FILE = os.path.join(BASE_DIR, "tiktok_cookies.txt")      # exported from browser
 
 # ── FFmpeg video output settings ────────────────────────────

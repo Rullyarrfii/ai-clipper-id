@@ -112,8 +112,13 @@ python scheduler.py
 2. Picks the **lowest rank** clip that has a matching video file
 3. Converts it to platform-specific specs using FFmpeg:
    - Instagram: max 90s, 1080×1920
-   - YouTube: max 180s, 1080×1920
+   - YouTube: max 180s, 1080×1920 (landscape clips are automatically padded with black bars)
    - TikTok: max 180s, 1080×1920
+
+   **Note:** if a video is horizontal the scheduler will automatically
+   add black bars to make it vertical; the original file remains untouched.
+   TikTok cookies are also inspected for expiry so you get a clear message
+   prompting a re-export instead of a generic auth failure.
 4. Uploads to all enabled platforms
 5. **Deletes the source `.mp4`** and removes the entry from `clips.json`
 

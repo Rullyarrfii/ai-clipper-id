@@ -89,6 +89,40 @@ Checks your cookies file is valid.
 
 ## Run the Scheduler
 
+### Maintenance commands
+
+The scheduler now supports several utility flags that operate on the queue
+and clips folder without starting the daily job.  These are useful when you
+suspect the queue is out of sync (like missing uploads, duplicate ranks, or
+leftover MP4s).
+
+```bash
+# rebuild queue from another master file, excluding already-posted clips
+python scheduler.py --rebuild-queue --master ../clips.json
+
+# delete unreferenced mp4 files in the clips folder
+python scheduler.py --clean-orphans
+
+# or use the standalone helper script under
+# `schedule_sosmed/scripts/clean_orphans.py` which defaults to the
+# `schedule_sosmed/clips/clips.json` file:
+#
+# ```bash
+# python schedule_sosmed/scripts/clean_orphans.py  # delete
+# python schedule_sosmed/scripts/clean_orphans.py --dry-run  # no-op
+# ```
+
+# remove entries that appear in the upload log
+python scheduler.py --prune-posted
+
+# combine with --dry-run to preview changes without writing
+```
+
+The flags are mutually compatible; for example you can rebuild and clean at
+once by running the first command and then the second.  (``--rebuild-queue``
+always stops after performing its action.)
+
+
 ```bash
 python scheduler.py
 ```
@@ -109,7 +143,7 @@ python scheduler.py
 ## How It Works
 
 1. At each scheduled time, the script reads `clips.json`
-2. Picks the **lowest rank** clip that has a matching video file
+2. Picks the **highest scoring clip** for the current time slot (rank is only used for ordering in the master list; duplicate ranks are fine). The chosen clip is identified by its **filename**, which also determines what file is deleted when it’s posted.
 3. Converts it to platform-specific specs using FFmpeg:
    - Instagram: max 90s, 1080×1920
    - YouTube: max 180s, 1080×1920 (landscape clips are automatically padded with black bars)
@@ -127,6 +161,11 @@ python scheduler.py
 ## Logs
 
 All activity is logged to `uploader.log` and printed to console.
+
+Additionally, each successfully uploaded clip is recorded in a JSON file
+inside a new `logs/` directory adjacent to your clips folder.  The file
+`logs/clips.json` contains an array of entries (timestamp, clip metadata, and
+which platforms succeeded), making it easy to review your posting history.
 
 ---
 

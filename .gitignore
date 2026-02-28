@@ -1,5 +1,6 @@
 .cache
 clips*
+logs*
 videos
 .vscode
 .cache

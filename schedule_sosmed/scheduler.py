@@ -84,9 +84,9 @@ from config import (
 )
 
 # ── Daily upload limits (prevent quota exhaustion & rate limiting) ──
-MAX_DAILY_YOUTUBE_UPLOADS = 5   # Leave 1 quota buffer for retries
-MAX_DAILY_INSTAGRAM_UPLOADS = 3  # Avoid Instagram bot detection
-MAX_DAILY_TIKTOK_UPLOADS = 10    # TikTok is more lenient
+MAX_DAILY_YOUTUBE_UPLOADS = 6
+MAX_DAILY_INSTAGRAM_UPLOADS = 6
+MAX_DAILY_TIKTOK_UPLOADS = 6
 
 # Track daily upload counts (reset at midnight WIB)
 _daily_counts = {

@@ -49,41 +49,73 @@ def main():
         logging.info("no clips in clips_temp.json")
         return
 
-    # process clips and track which ones to remove
-    clips_to_remove = []
+    # process clips one at a time, reloading after each successful upload
+    while True:
+        # reload clips at the start of each iteration
+        try:
+            with open(temp_path, "r", encoding="utf-8") as f:
+                clips = json.load(f)
+        except Exception as e:
+            logging.error("failed to reload clips_temp.json: %s", e)
+            break
 
-    for i, clip in enumerate(clips):
+        if not clips:
+            logging.info("✅ all clips processed!")
+            break
+
+        # process the first clip in the list
+        clip = clips[0]
         fn = clip.get("filename")
+        
         if not fn:
             logging.warning("skipping entry without filename: %r", clip)
+            # remove the invalid clip
+            clips.pop(0)
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(clips, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logging.error("failed to update clips_temp.json: %s", e)
             continue
 
         video_path = os.path.join(CLIPS_FOLDER, fn)
         if not os.path.exists(video_path):
             logging.warning("video not found, skipping: %s", video_path)
-            continue
-
-        logging.info("uploading %s", fn)
-        success = scheduler.upload_tiktok(video_path, clip)
-        if success:
-            logging.info("✅ uploaded %s", fn)
-            clips_to_remove.append(clip)
-            
-            # remove this clip from clips_temp.json immediately
-            remaining_clips = [c for c in clips if c != clip]
+            # remove the missing clip
+            clips.pop(0)
             try:
                 with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(remaining_clips, f, indent=2, ensure_ascii=False)
+                    json.dump(clips, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logging.error("failed to update clips_temp.json: %s", e)
+            continue
+
+        logging.info("uploading %s (%d clips remaining)", fn, len(clips))
+        success = scheduler.upload_tiktok(video_path, clip)
+        
+        if success:
+            logging.info("✅ uploaded %s", fn)
+            
+            # reload to ensure we have latest state, then remove this clip
+            try:
+                with open(temp_path, "r", encoding="utf-8") as f:
+                    clips = json.load(f)
+                # remove by filename to be safe
+                clips = [c for c in clips if c.get("filename") != fn]
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(clips, f, indent=2, ensure_ascii=False)
                 logging.info("📝 removed %s from clips_temp.json", fn)
             except Exception as e:
                 logging.error("failed to update clips_temp.json: %s", e)
+                break
             
             # polite pause between uploads (still using shared browser)
-            if i < len(clips) - 1:
+            if clips:  # if there are more clips to process
                 logging.info("⏳ waiting 123 seconds before next upload...")
                 time.sleep(123)
         else:
-            logging.error("❌ failed to upload %s", fn)
+            logging.error("❌ failed to upload %s, stopping.", fn)
+            break
 
 
 if __name__ == "__main__":

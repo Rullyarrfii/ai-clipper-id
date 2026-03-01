@@ -83,6 +83,29 @@ from config import (
     ENABLE_INSTAGRAM, ENABLE_YOUTUBE, ENABLE_TIKTOK,
 )
 
+# ── Daily upload limits (prevent quota exhaustion & rate limiting) ──
+MAX_DAILY_YOUTUBE_UPLOADS = 5   # Leave 1 quota buffer for retries
+MAX_DAILY_INSTAGRAM_UPLOADS = 3  # Avoid Instagram bot detection
+MAX_DAILY_TIKTOK_UPLOADS = 10    # TikTok is more lenient
+
+# Track daily upload counts (reset at midnight WIB)
+_daily_counts = {
+    "youtube": 0,
+    "instagram": 0,
+    "tiktok": 0,
+    "last_reset_date": None,
+}
+
+def reset_daily_counts_if_needed():
+    """Reset upload counters at midnight WIB."""
+    today = datetime.now(pytz.timezone("Asia/Jakarta")).date()
+    if _daily_counts["last_reset_date"] != today:
+        _daily_counts["youtube"] = 0
+        _daily_counts["instagram"] = 0
+        _daily_counts["tiktok"] = 0
+        _daily_counts["last_reset_date"] = today
+        log.info(f"📊 Daily upload counters reset for {today}")
+
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -362,14 +385,63 @@ def get_clip_by_filename(filename: str) -> tuple:
     return None, None
 
 
-def mark_done(clip: dict) -> bool:
-    """Remove a clipped entry and its file(s) from the queue.
+def log_upload(clip: dict, video_path: str, results: dict) -> None:
+    """Write upload results to structured logs.
+
+    Appends to both logs/clips.json (structured array) and logs/uploads.jsonl
+    (newline-delimited journal for easy tailing).
+    """
+    os.makedirs(LOGS_FOLDER, exist_ok=True)
+    
+    timestamp = datetime.now(pytz.timezone("Asia/Jakarta")).isoformat()
+    
+    entry = {
+        "timestamp": timestamp,
+        "clip": clip,
+        "video_path": video_path,
+        "results": results,
+        "success_count": sum(bool(v) for v in results.values()),
+        "total_platforms": len(results),
+    }
+    
+    # Append to newline-delimited journal (easy to tail/grep)
+    jsonl_path = os.path.join(LOGS_FOLDER, "uploads.jsonl")
+    try:
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning(f"Could not write to upload journal: {e}")
+    
+    # Update structured log array
+    json_log = os.path.join(LOGS_FOLDER, "clips.json")
+    try:
+        if os.path.exists(json_log):
+            with open(json_log, "r", encoding="utf-8") as f:
+                log_data = json.load(f)
+        else:
+            log_data = []
+        
+        log_data.append(entry)
+        
+        with open(json_log, "w", encoding="utf-8") as f:
+            json.dump(log_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log.warning(f"Could not update structured upload log: {e}")
+
+
+def mark_done(clip: dict, delete_files: bool = True) -> bool:
+    """Remove a clipped entry from the queue.
 
     Identification is solely by ``filename``.  If multiple entries happen to
     share the same filename (which should never happen after deduplication)
-    they all are removed to avoid orphaned duplicates.  Returns ``True`` if
-    anything was removed from the queue (and attempts to delete the file),
-    ``False`` otherwise.
+    they all are removed to avoid orphaned duplicates.
+    
+    Args:
+        clip: The clip dict to remove
+        delete_files: If True, also delete the video file(s). If False, only
+                      remove from clips.json (useful for partial uploads)
+    
+    Returns ``True`` if anything was removed from the queue, ``False`` otherwise.
     """
     fn = clip.get("filename")
     if not fn:
@@ -382,15 +454,20 @@ def mark_done(clip: dict) -> bool:
     if removed:
         save_clips(remaining)
         log.info(f"📋 Removed {removed} clip(s) with filename '{fn}' from clips.json ({len(remaining)} remaining)")
-        # try deleting the file(s)
-        path = os.path.join(CLIPS_FOLDER, fn)
-        for candidate in (path, f"{os.path.splitext(path)[0]}_padded.mp4"):
-            try:
-                if os.path.exists(candidate):
-                    os.remove(candidate)
-                    log.info(f"🗑️  Deleted source: {candidate}")
-            except Exception as e:
-                log.warning(f"Could not delete {candidate}: {e}")
+        
+        if delete_files:
+            # try deleting the file(s)
+            path = os.path.join(CLIPS_FOLDER, fn)
+            for candidate in (path, f"{os.path.splitext(path)[0]}_padded.mp4"):
+                try:
+                    if os.path.exists(candidate):
+                        os.remove(candidate)
+                        log.info(f"🗑️  Deleted source: {candidate}")
+                except Exception as e:
+                    log.warning(f"Could not delete {candidate}: {e}")
+        else:
+            log.info(f"💾 Kept video file for manual review: {fn}")
+        
         return True
     else:
         log.warning(f"mark_done: clip '{fn}' not found in queue")
@@ -410,13 +487,25 @@ def get_ig_client() -> IGClient:
             return cl
         except LoginRequired:
             log.warning("Instagram session expired, re-logging in ...")
+            # Create fresh client instance for re-login
+            cl = IGClient()
     
     # Load credentials from JSON file
     with open(INSTAGRAM_CREDENTIAL_FILE, "r", encoding="utf-8") as f:
         creds = json.load(f)
     
-    cl.login(creds["username"], creds["password"])
-    cl.dump_settings(INSTAGRAM_SESSION_FILE)
+    try:
+        cl.login(creds["username"], creds["password"])
+        cl.dump_settings(INSTAGRAM_SESSION_FILE)
+    except Exception as e:
+        log.error(f"Instagram login failed: {e}")
+        if "403" in str(e) or "login_required" in str(e):
+            log.error("   Instagram may be blocking automated logins. Try:")
+            log.error("   1. Delete ig_session.json and try again")
+            log.error("   2. Verify credentials in ig_cred.json are correct")
+            log.error("   3. Login manually to Instagram from your IP address first")
+            log.error("   4. Wait a few hours before retrying (rate limit)")
+        raise
     return cl
 
 
@@ -627,6 +716,11 @@ def generate_thumbnail(video_path: str, width: int, height: int, suffix: str) ->
 # ═══════════════════════════════════════════════════════════
 
 def upload_instagram(video_path: str, clip: dict) -> bool:
+    reset_daily_counts_if_needed()
+    if _daily_counts["instagram"] >= MAX_DAILY_INSTAGRAM_UPLOADS:
+        log.warning(f"⚠️  Instagram daily limit reached ({MAX_DAILY_INSTAGRAM_UPLOADS}/day) — skipping")
+        return False
+    
     try:
         thumbnail_path = generate_thumbnail(video_path, 1080, 1920, "instagram")
         if not thumbnail_path:
@@ -634,7 +728,8 @@ def upload_instagram(video_path: str, clip: dict) -> bool:
 
         ig = get_ig_client()
         ig.clip_upload(path=video_path, caption=clip["caption"], thumbnail=thumbnail_path)
-        log.info(f"✅ Instagram: {clip['title']}")
+        _daily_counts["instagram"] += 1
+        log.info(f"✅ Instagram: {clip['title']} [{_daily_counts['instagram']}/{MAX_DAILY_INSTAGRAM_UPLOADS} today]")
         log.info(f"🖼️ Instagram thumbnail uploaded: {thumbnail_path}")
         return True
     except Exception as e:
@@ -643,6 +738,11 @@ def upload_instagram(video_path: str, clip: dict) -> bool:
 
 
 def upload_youtube(video_path: str, clip: dict) -> bool:
+    reset_daily_counts_if_needed()
+    if _daily_counts["youtube"] >= MAX_DAILY_YOUTUBE_UPLOADS:
+        log.warning(f"⚠️  YouTube daily quota limit reached ({MAX_DAILY_YOUTUBE_UPLOADS}/day) — skipping")
+        return False
+    
     try:
         yt = get_youtube_client()
         if not validate_youtube_channel(yt):
@@ -710,11 +810,23 @@ def upload_youtube(video_path: str, clip: dict) -> bool:
             media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg"),
         ).execute()
 
-        log.info(f"✅ YouTube: https://youtube.com/shorts/{resp['id']}")
+        _daily_counts["youtube"] += 1
+        log.info(f"✅ YouTube: https://youtube.com/shorts/{resp['id']} [{_daily_counts['youtube']}/{MAX_DAILY_YOUTUBE_UPLOADS} today]")
         log.info(f"🖼️ YouTube thumbnail uploaded: {thumbnail_path}")
         return True
     except Exception as e:
-        log.error(f"❌ YouTube failed: {e}")
+        error_str = str(e)
+        if "quotaExceeded" in error_str or "403" in error_str:
+            log.error("❌ YouTube failed: Daily API quota exceeded")
+            log.error("   YouTube API has a daily quota limit (10,000 units/day)")
+            log.error("   Video uploads cost 1,600 units each (~6 uploads/day max)")
+            log.error("   Quota resets at midnight Pacific Time (PT)")
+            log.error("   Solutions:")
+            log.error("   1. Wait until quota resets (check: https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas)")
+            log.error("   2. Request quota increase via Google Cloud Console")
+            log.error("   3. Disable YouTube uploads temporarily in config.py")
+        else:
+            log.error(f"❌ YouTube failed: {e}")
         return False
 
 
@@ -747,6 +859,11 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
     This uses the class-based API which provides better control over the upload
     process and proper context management.
     """
+    reset_daily_counts_if_needed()
+    if _daily_counts["tiktok"] >= MAX_DAILY_TIKTOK_UPLOADS:
+        log.warning(f"⚠️  TikTok daily limit reached ({MAX_DAILY_TIKTOK_UPLOADS}/day) — skipping")
+        return False
+    
     try:
         video_path = ensure_vertical(video_path)
         if not video_path:
@@ -759,6 +876,7 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
 
         def cookies_expired(path: str) -> bool:
             now = time.time()
+            expiring_soon = now + (7 * 24 * 60 * 60)  # Warn if expires within 7 days
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     for line in f:
@@ -772,8 +890,12 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
                                 expires = int(parts[4])
                             except ValueError:
                                 continue
-                            if name in ("sessionid", "ttwid") and expires < now:
-                                return True
+                            if name in ("sessionid", "ttwid"):
+                                if expires < now:
+                                    return True
+                                elif expires < expiring_soon:
+                                    days_left = (expires - now) / (24 * 60 * 60)
+                                    log.warning(f"⚠️  TikTok cookie '{name}' expires in {days_left:.1f} days - refresh soon!")
             except Exception:
                 return True
             return False
@@ -813,7 +935,8 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
             log.error(f"❌ TikTok upload failed: {failed}")
             return False
 
-        log.info(f"✅ TikTok: {clip['title']}")
+        _daily_counts["tiktok"] += 1
+        log.info(f"✅ TikTok: {clip['title']} [{_daily_counts['tiktok']}/{MAX_DAILY_TIKTOK_UPLOADS} today]")
         log.info(f"🖼️ TikTok cover uploaded: {thumbnail_path}")
         return True
     except Exception as e:
@@ -829,7 +952,7 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
 # ═══════════════════════════════════════════════════════════
 
 
-# Enhanced: iterate through all clips until queue is empty, using day+slot engagement
+# Post ONE clip per time slot (prevents quota exhaustion)
 def make_post_job(slot_time: str, tier: int, label: str):
     def post_job():
         now_dt = datetime.now(pytz.timezone("Asia/Jakarta"))
@@ -837,53 +960,57 @@ def make_post_job(slot_time: str, tier: int, label: str):
         day_name = now_dt.strftime("%A")
         log.info("─" * 60)
         log.info(f"⏰  {slot_time} WIB  —  {label}  (tier {tier})  |  {now} | {day_name}")
+        
+        reset_daily_counts_if_needed()
 
-        # Process all clips in queue for this slot and day
-        while True:
-            clip, video_path = get_clip_for_slot_and_day(slot_time, day_name)
-            if clip is None:
-                log.warning("📭 Queue empty — nothing to post.")
-                break
+        # Post ONE clip per slot (not all clips!)
+        clip, video_path = get_clip_for_slot_and_day(slot_time, day_name)
+        if clip is None:
+            log.warning("📭 Queue empty — nothing to post.")
+            return
 
-            log.info(f"📹 Posting   : [score={clip.get('class_score', clip.get('clip_score', '?'))}]  rank {clip['rank']}  — {clip['title']}")
-            log.info(f"   File      : {clip.get('filename')}")
+        log.info(f"📹 Posting   : [score={clip.get('class_score', clip.get('clip_score', '?'))}]  rank {clip['rank']}  — {clip['title']}")
+        log.info(f"   File      : {clip.get('filename')}")
 
-            results = {}
-            # Run each platform upload in its own try/except to ensure all are attempted
-            if ENABLE_INSTAGRAM:
-                try:
-                    results["instagram"] = upload_instagram(video_path, clip)
-                except Exception as e:
-                    log.error(f"Exception during Instagram upload: {e}")
-                    results["instagram"] = False
-            if ENABLE_YOUTUBE:
-                try:
-                    results["youtube"] = upload_youtube(video_path, clip)
-                except Exception as e:
-                    log.error(f"Exception during YouTube upload: {e}")
-                    results["youtube"] = False
-            if ENABLE_TIKTOK:
-                try:
-                    results["tiktok"] = upload_tiktok(video_path, clip)
-                except Exception as e:
-                    log.error(f"Exception during TikTok upload: {e}")
-                    results["tiktok"] = False
+        results = {}
+        # Run each platform upload in its own try/except to ensure all are attempted
+        if ENABLE_INSTAGRAM:
+            try:
+                results["instagram"] = upload_instagram(video_path, clip)
+            except Exception as e:
+                log.error(f"Exception during Instagram upload: {e}")
+                results["instagram"] = False
+        if ENABLE_YOUTUBE:
+            try:
+                results["youtube"] = upload_youtube(video_path, clip)
+            except Exception as e:
+                log.error(f"Exception during YouTube upload: {e}")
+                results["youtube"] = False
+        if ENABLE_TIKTOK:
+            try:
+                results["tiktok"] = upload_tiktok(video_path, clip)
+            except Exception as e:
+                log.error(f"Exception during TikTok upload: {e}")
+                results["tiktok"] = False
 
-            ok = sum(bool(v) for v in results.values())
-            log.info(f"📊 {ok}/{len(results)} platforms succeeded — {results}")
+        ok = sum(bool(v) for v in results.values())
+        total = len(results)
+        log.info(f"📊 {ok}/{total} platforms succeeded — {results}")
+        
+        # Log the upload attempt (success or failure)
+        log_upload(clip, video_path, results)
 
-            if ok > 0:
-                mark_done(clip)
-                try:
-                    os.remove(video_path)
-                    log.info(f"🗑️  Deleted source: {video_path}")
-                except FileNotFoundError:
-                    log.warning(f"Source already missing during cleanup: {video_path}")
-                except Exception as e:
-                    log.error(f"Could not delete {video_path}: {e}")
-            else:
-                log.error("⚠️  All platforms failed — keeping file for retry next slot.")
-                break  # Don't loop endlessly on a failed clip
+        if ok == total and total > 0:
+            # All enabled platforms succeeded - remove from queue AND delete files
+            log.info("✅ All platforms succeeded - removing from queue and deleting files")
+            mark_done(clip, delete_files=True)
+        elif ok > 0:
+            # Partial success - remove from queue but KEEP files for manual review/retry
+            log.warning(f"⚠️  Only {ok}/{total} platforms succeeded - removing from queue but keeping files")
+            mark_done(clip, delete_files=False)
+        else:
+            # Total failure - keep everything for automatic retry
+            log.error("❌ All enabled platforms failed - keeping entry and file for retry next slot")
 
     post_job.__name__ = f"post_{slot_time.replace(':', '')}"
     return post_job
@@ -911,6 +1038,9 @@ def run_test_post(filename: str):
 
     ok = sum(results.values())
     log.info(f"📊 Test result: {ok}/{len(results)} platforms succeeded — {results}")
+    
+    # Log the test upload
+    log_upload(clip, video_path, results)
 
     if ok > 0:
         posted_at = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
@@ -1015,6 +1145,15 @@ def main(test_file: str | None = None,
     log.info(f"\n📋 {len(clips)} clips in queue at startup")
     log.info("   (clips.json is re-read fresh before every upload)")
     log.info("")
+    log.info(f"📊 Daily limits: YouTube={MAX_DAILY_YOUTUBE_UPLOADS}, Instagram={MAX_DAILY_INSTAGRAM_UPLOADS}, TikTok={MAX_DAILY_TIKTOK_UPLOADS}")
+    log.info("")
+
+    # Schedule periodic TikTok browser restart (prevent memory leaks)
+    def restart_tiktok_browser():
+        log.info("🔄 Restarting TikTok browser to prevent memory leaks...")
+        close_tiktok_uploader()
+        
+    schedule.every().day.at("04:00", "Asia/Jakarta").do(restart_tiktok_browser)
 
     for slot_time, tier, label in SCHEDULE_SLOTS:
         job_fn = make_post_job(slot_time, tier, label)

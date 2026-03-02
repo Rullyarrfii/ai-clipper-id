@@ -30,8 +30,11 @@ your-clips-folder/
 
 ### 1. Install dependencies
 ```bash
+cd schedule_sosmed
 pip install -r requirements.txt
 ```
+
+> **Note:** The `tiktok-uploader` package is installed from the local `./tiktok-uploader` directory. Make sure you're in the `schedule_sosmed/` folder when running the install command.
 
 ### 2. Edit config.py
 Open `config.py` and set:

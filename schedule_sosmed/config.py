@@ -33,6 +33,7 @@ YOUTUBE_SELF_DECLARED_MADE_FOR_KIDS = False
 # ── TikTok ───────────────────────────────────────────────────
 # ── TikTok ───────────────────────────────────────────────────
 TIKTOK_COOKIES_FILE = os.path.join(BASE_DIR, "tiktok_cookies.txt")      # exported from browser
+TIKTOK_BROWSER_DATA_DIR = os.path.join(BASE_DIR, "tiktok_browser_data") # persistent browser cookies/cache/storage
 
 # ── FFmpeg video output settings ────────────────────────────
 VIDEO_RESOLUTION = "1080:1920"   # vertical 9:16

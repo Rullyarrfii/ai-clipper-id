@@ -40,7 +40,11 @@ def _get_tiktok_uploader() -> TikTokUploader:
     global _tiktok_uploader
     if _tiktok_uploader is None:
         # lazy-create; caller is responsible for calling close() when finished
-        _tiktok_uploader = TikTokUploader(cookies=TIKTOK_COOKIES_FILE, headless=True)
+        _tiktok_uploader = TikTokUploader(
+            cookies=TIKTOK_COOKIES_FILE,
+            headless=True,
+            user_data_dir=TIKTOK_BROWSER_DATA_DIR,
+        )
     return _tiktok_uploader
 
 def close_tiktok_uploader() -> None:
@@ -78,6 +82,7 @@ from config import (
     YOUTUBE_NOTIFY_SUBSCRIBERS,
     YOUTUBE_SELF_DECLARED_MADE_FOR_KIDS,
     TIKTOK_COOKIES_FILE,
+    TIKTOK_BROWSER_DATA_DIR,
     FFMPEG_BIN,
     FFPROBE_BIN,
     ENABLE_INSTAGRAM, ENABLE_YOUTUBE, ENABLE_TIKTOK,
@@ -381,7 +386,25 @@ def get_clip_by_filename(filename: str) -> tuple:
                 return clip, path
             log.error(f"File for test post not found: {path}")
             return None, None
-    log.error(f"No clip entry found in clips.json for filename: {filename}")
+    
+    # If not found in clips.json, check logs/clips.json
+    json_log = os.path.join(LOGS_FOLDER, "clips.json")
+    if os.path.exists(json_log):
+        try:
+            with open(json_log, "r", encoding="utf-8") as f:
+                log_data = json.load(f)
+            for entry in log_data:
+                clip = entry.get("clip", {})
+                if clip.get("filename") == filename:
+                    path = os.path.join(CLIPS_FOLDER, filename)
+                    if os.path.exists(path):
+                        return clip, path
+                    log.error(f"File for test post not found: {path}")
+                    return None, None
+        except Exception as e:
+            log.warning(f"Could not read logs/clips.json: {e}")
+    
+    log.error(f"No clip entry found in clips.json or logs/clips.json for filename: {filename}")
     return None, None
 
 
@@ -1016,12 +1039,14 @@ def make_post_job(slot_time: str, tier: int, label: str):
     return post_job
 
 
-def run_test_post(filename: str):
+def run_test_post(filename: str, platform: str | None = None):
     now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
     log.info("=" * 60)
     log.info("🧪 TEST MODE — single file post")
     log.info(f"🕒 Triggered at: {now}")
     log.info(f"🎯 Filename    : {filename}")
+    if platform:
+        log.info(f"🎯 Platform    : {platform}")
     log.info("=" * 60)
 
     clip, video_path = get_clip_by_filename(filename)
@@ -1029,12 +1054,25 @@ def run_test_post(filename: str):
         return
 
     results = {}
-    if ENABLE_TIKTOK:
-        results["tiktok"] = upload_tiktok(video_path, clip)
-    if ENABLE_INSTAGRAM:
-        results["instagram"] = upload_instagram(video_path, clip)
-    if ENABLE_YOUTUBE:
-        results["youtube"] = upload_youtube(video_path, clip)
+    # If platform is specified, only post to that platform
+    if platform:
+        if platform.lower() == "tiktok" and ENABLE_TIKTOK:
+            results["tiktok"] = upload_tiktok(video_path, clip)
+        elif platform.lower() == "instagram" and ENABLE_INSTAGRAM:
+            results["instagram"] = upload_instagram(video_path, clip)
+        elif platform.lower() == "youtube" and ENABLE_YOUTUBE:
+            results["youtube"] = upload_youtube(video_path, clip)
+        else:
+            log.error(f"Platform '{platform}' not enabled or not recognized")
+            return
+    else:
+        # If no platform specified, post to all enabled platforms
+        if ENABLE_TIKTOK:
+            results["tiktok"] = upload_tiktok(video_path, clip)
+        if ENABLE_INSTAGRAM:
+            results["instagram"] = upload_instagram(video_path, clip)
+        if ENABLE_YOUTUBE:
+            results["youtube"] = upload_youtube(video_path, clip)
 
     ok = sum(results.values())
     log.info(f"📊 Test result: {ok}/{len(results)} platforms succeeded — {results}")
@@ -1083,7 +1121,8 @@ def main(test_file: str | None = None,
          master: str | None = None,
          clean_orphans_flag: bool = False,
          prune_posted: bool = False,
-         dry_run: bool = False):
+         dry_run: bool = False,
+         platform: str | None = None):
     log.info("=" * 60)
     log.info("  Cross-Platform Video Scheduler")
     log.info(f"  Timezone  : Asia/Jakarta (WIB, UTC+7)")
@@ -1110,10 +1149,6 @@ def main(test_file: str | None = None,
         return
 
     clips = load_clips()
-    # tidy up stray video files not referenced by the queue
-    deleted = clean_orphan_files(clips)
-    if deleted:
-        log.info(f"🧹 automatically removed {deleted} orphan file(s) from clips folder")
 
     if prune_posted:
         posted = get_posted_filenames()
@@ -1133,7 +1168,7 @@ def main(test_file: str | None = None,
         return
 
     if test_file:
-        run_test_post(test_file)
+        run_test_post(test_file, platform=platform)
         return
 
     log.info(f"\n  {'Time':<8}  {'Tier':<8}  Description")
@@ -1195,6 +1230,10 @@ if __name__ == "__main__":
         action="store_true",
         help="When used with other maintenance flags, do not write changes; only show what would happen.",
     )
+    parser.add_argument(
+        "--platform",
+        help="Specify a platform to post to (instagram, youtube, or tiktok). Used with --test-file to post to a single platform.",
+    )
     args = parser.parse_args()
     main(
         test_file=args.test_file,
@@ -1203,4 +1242,5 @@ if __name__ == "__main__":
         clean_orphans_flag=args.clean_orphans,
         prune_posted=args.prune_posted,
         dry_run=args.dry_run,
+        platform=args.platform,
     )

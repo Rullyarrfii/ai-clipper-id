@@ -84,6 +84,11 @@ def get_browser(
         page = context.new_page() if len(context.pages) == 0 else context.pages[0]
         page.set_default_timeout(config.implicit_wait * 1000)  # Convert seconds to ms
         
+        # CRITICAL: Store the PlaywrightSyncAPI instance on the page so it can be
+        # properly stopped later. Without this, the asyncio event loop leaks and
+        # causes "Playwright Sync API inside asyncio loop" errors on subsequent uses.
+        page._playwright_sync_api = p
+        
         return page
     else:
         # Fallback to non-persistent context (data not saved)
@@ -108,4 +113,9 @@ def get_browser(
         page = context.new_page()
         page.set_default_timeout(config.implicit_wait * 1000)  # Convert seconds to ms
 
+        # CRITICAL: Store the PlaywrightSyncAPI instance on the page so it can be
+        # properly stopped later. Without this, the asyncio event loop leaks and
+        # causes "Playwright Sync API inside asyncio loop" errors on subsequent uses.
+        page._playwright_sync_api = p
+        
         return page

@@ -266,12 +266,24 @@ class TikTokUploader:
         return failed
 
     def close(self):
-        """Closes the browser instance."""
+        """Closes the browser instance and properly cleans up the asyncio event loop."""
         if self._page:
             try:
                 self._page.context.browser.close()
             except Exception as e:
                 logger.debug(f"Error closing browser: {e}")
+            
+            # CRITICAL: Stop the PlaywrightSyncAPI instance to prevent asyncio loop leaks
+            # This was causing "Playwright Sync API inside asyncio loop" errors on subsequent uses
+            try:
+                if hasattr(self._page, '_playwright_sync_api'):
+                    p = self._page._playwright_sync_api
+                    if p is not None:
+                        p.stop()
+                        logger.debug("PlaywrightSyncAPI stopped successfully")
+            except Exception as e:
+                logger.debug(f"Error stopping PlaywrightSyncAPI: {e}")
+            
             self._page = None
 
     def __enter__(self):

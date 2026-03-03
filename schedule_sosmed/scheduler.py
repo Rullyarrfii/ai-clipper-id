@@ -33,41 +33,6 @@ from googleapiclient.http import MediaFileUpload
 from tiktok_uploader.upload import TikTokUploader
 import atexit
 
-# cached TikTokUploader instance used to avoid restarting Playwright between clips
-_tiktok_uploader: TikTokUploader | None = None
-
-def _get_tiktok_uploader() -> TikTokUploader:
-    global _tiktok_uploader
-    if _tiktok_uploader is None:
-        # lazy-create; caller is responsible for calling close() when finished
-        _tiktok_uploader = TikTokUploader(
-            cookies=TIKTOK_COOKIES_FILE,
-            headless=True,
-            user_data_dir=TIKTOK_BROWSER_DATA_DIR,
-        )
-    return _tiktok_uploader
-
-def close_tiktok_uploader() -> None:
-    """Close and clear the shared TikTokUploader instance.
-
-    This is automatically registered with :mod:`atexit` so the browser will
-    be shut when the process exits normally.  You can call it manually if you
-    need to recycle the uploader earlier; the function is idempotent.
-    """
-    global _tiktok_uploader
-    if _tiktok_uploader is not None:
-        try:
-            _tiktok_uploader.close()
-        except Exception:
-            pass
-        _tiktok_uploader = None
-
-
-# ensure the browser is cleaned up on exit (covers both scheduler runs and
-# one-off scripts that import this module)
-atexit.register(close_tiktok_uploader)
-
-
 from config import (
     CLIPS_FOLDER,
     INSTAGRAM_CREDENTIAL_FILE, INSTAGRAM_SESSION_FILE,
@@ -881,6 +846,8 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
 
     This uses the class-based API which provides better control over the upload
     process and proper context management.
+    
+    Each upload gets a fresh browser instance to avoid asyncio event loop corruption.
     """
     reset_daily_counts_if_needed()
     if _daily_counts["tiktok"] >= MAX_DAILY_TIKTOK_UPLOADS:
@@ -946,22 +913,26 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
             "cover": thumbnail_path,
         }
 
-        # use shared uploader instance so we don't start a new Playwright
-        # browser on every clip.  creating multiple sync-browser instances
-        # in the same process was triggering the "asyncio loop" error.
-        uploader = _get_tiktok_uploader()
-        # allow a couple of overall retries to handle flaky navigation or
-        # temporary TikTok hiccups (also covers the video-set retry).
-        failed = uploader.upload_videos([video_dict], num_retries=2, skip_interactivity=True)
+        # Create a fresh uploader instance for each upload and use context manager
+        # to guarantee proper cleanup. This prevents asyncio event loop corruption
+        # which was causing "Playwright Sync API inside asyncio loop" errors.
+        with TikTokUploader(
+            cookies=TIKTOK_COOKIES_FILE,
+            headless=True,
+            user_data_dir=TIKTOK_BROWSER_DATA_DIR,
+        ) as uploader:
+            # allow a couple of overall retries to handle flaky navigation or
+            # temporary TikTok hiccups (also covers the video-set retry).
+            failed = uploader.upload_videos([video_dict], num_retries=2, skip_interactivity=True)
 
-        if failed:
-            log.error(f"❌ TikTok upload failed: {failed}")
-            return False
+            if failed:
+                log.error(f"❌ TikTok upload failed: {failed}")
+                return False
 
-        _daily_counts["tiktok"] += 1
-        log.info(f"✅ TikTok: {clip['title']} [{_daily_counts['tiktok']}/{MAX_DAILY_TIKTOK_UPLOADS} today]")
-        log.info(f"🖼️ TikTok cover uploaded: {thumbnail_path}")
-        return True
+            _daily_counts["tiktok"] += 1
+            log.info(f"✅ TikTok: {clip['title']} [{_daily_counts['tiktok']}/{MAX_DAILY_TIKTOK_UPLOADS} today]")
+            log.info(f"🖼️ TikTok cover uploaded: {thumbnail_path}")
+            return True
     except Exception as e:
         log.error(f"❌ TikTok failed: {e}")
         if "No valid authentication source found" in str(e):
@@ -1182,13 +1153,6 @@ def main(test_file: str | None = None,
     log.info("")
     log.info(f"📊 Daily limits: YouTube={MAX_DAILY_YOUTUBE_UPLOADS}, Instagram={MAX_DAILY_INSTAGRAM_UPLOADS}, TikTok={MAX_DAILY_TIKTOK_UPLOADS}")
     log.info("")
-
-    # Schedule periodic TikTok browser restart (prevent memory leaks)
-    def restart_tiktok_browser():
-        log.info("🔄 Restarting TikTok browser to prevent memory leaks...")
-        close_tiktok_uploader()
-        
-    schedule.every().day.at("04:00", "Asia/Jakarta").do(restart_tiktok_browser)
 
     for slot_time, tier, label in SCHEDULE_SLOTS:
         job_fn = make_post_job(slot_time, tier, label)

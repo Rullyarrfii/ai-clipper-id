@@ -15,7 +15,7 @@ from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
 from .utils import (
     log, BOLD, RESET, CYAN, GREEN, YELLOW,
-    MAX_CLIPS_HARD_LIMIT
+    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries
 )
 
 
@@ -141,16 +141,17 @@ def main() -> None:
         print()
         
         # Summary table
-        print(f"{BOLD}{'#':<4} {'Score':<6} {'E/I/N/H':<14} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
-        print("─" * 85)
+        print(f"{BOLD}{'#':<4} {'Score':<6} {'H/R/S/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+        print("─" * 90)
         for c in clips:
             d = c["end"] - c["start"]
-            se = c.get("score_easy", "?")
-            si = c.get("score_informative", "?")
-            sn = c.get("score_newsworthy", "?")
-            sh = c.get("score_energy", "?")
+            sh = c.get("score_hook", "?")
+            sr = c.get("score_retention", "?")
+            ss = c.get("score_shareability", "?")
+            se = c.get("score_entertainment", "?")
+            sc = c.get("score_clarity", "?")
             print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
-                  f"{se}/{si}/{sn}/{sh}  "
+                  f"{sh}/{sr}/{ss}/{se}/{sc}  "
                   f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
         print()
         
@@ -317,17 +318,33 @@ def main() -> None:
         log("WARN", "No engaging clips found. Exiting.")
         sys.exit(0)
 
+    # Tighten clip boundaries to actual speech (remove gaps, filler, silence)
+    original_durations = [c["end"] - c["start"] for c in clips]
+    clips = tighten_clip_boundaries(
+        clips, segments,
+        padding=0.15,
+        max_gap=2.0,  # Remove silence gaps > 2 seconds
+        min_speech_density=0.5,  # Words per second threshold for "dense" speech
+    )
+    new_durations = [c["end"] - c["start"] for c in clips]
+    time_saved = sum(original_durations) - sum(new_durations)
+    if time_saved > 1:
+        log("OK", f"Removed {time_saved:.1f}s of gaps/filler (avg {time_saved/len(clips):.1f}s per clip)")
+    else:
+        log("OK", "Clip boundaries optimized")
+
     # Summary table
-    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'E/I/N/H':<14} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
-    print("─" * 85)
+    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'H/R/S/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+    print("─" * 90)
     for c in clips:
         d = c["end"] - c["start"]
-        se = c.get("score_easy", "?")
-        si = c.get("score_informative", "?")
-        sn = c.get("score_newsworthy", "?")
-        sh = c.get("score_energy", "?")
+        sh = c.get("score_hook", "?")
+        sr = c.get("score_retention", "?")
+        ss = c.get("score_shareability", "?")
+        se = c.get("score_entertainment", "?")
+        sc = c.get("score_clarity", "?")
         print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
-              f"{se}/{si}/{sn}/{sh}  "
+              f"{sh}/{sr}/{ss}/{se}/{sc}  "
               f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
     print()
 

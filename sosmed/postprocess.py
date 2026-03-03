@@ -346,6 +346,8 @@ def postprocess_clips(
             try:
                 out = fut.result()
                 mb = os.path.getsize(out) / 1_048_576
+                # record final filename in metadata
+                clip["filename"] = Path(out).name
                 log("OK", f"  #{clip['rank']:>2} {clip['title'][:35]:<35}  "
                           f"post-processed ({mb:.1f} MB)")
                 results.append(out)

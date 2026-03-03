@@ -4,6 +4,7 @@ CLI interface: argument parsing and orchestration.
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -108,6 +109,25 @@ def main() -> None:
     lang = None if args.lang.lower() == "none" else args.lang
     video = Path(args.video)
 
+    # helper to compute a safe clip filename (post-processed)
+    def _make_clip_filename(clip: dict) -> str:
+        # mimic postprocess naming: take raw stem (rankXX_title) and add _final.mp4
+        # generate safe title if necessary
+        rank = clip.get("rank", 0)
+        safe = re.sub(r"[^\w\s-]", "", clip.get("title", f"clip_{rank}"))
+        safe = re.sub(r"\s+", "_", safe)[:50]
+        return f"rank{rank:02d}_{safe}_final.mp4"
+
+    def _ensure_filenames(clips_list: list[dict]) -> bool:
+        """Ensure every clip dict has a ``filename`` key. Returns True if any changes made."""
+        changed = False
+        for c in clips_list:
+            if "filename" not in c or not c["filename"]:
+                c["filename"] = _make_clip_filename(c)
+                changed = True
+        return changed
+
+
     # ── Example mode: skip to extraction ─────────────────────────────────
     if args.example:
         if not video.exists():
@@ -122,6 +142,10 @@ def main() -> None:
             sys.exit(1)
         
         all_clips = json.loads(clips_file.read_text())
+        # ensure filename metadata exists (and update cache if modified)
+        if _ensure_filenames(all_clips):
+            clips_file.write_text(json.dumps(all_clips, indent=2, ensure_ascii=False))
+            log("OK", f"Augmented existing clips with filenames → {clips_file}")
         clips = all_clips[:args.example_count]  # Take only the first N clips
         
         print(f"\n{BOLD}{CYAN}{'═' * 50}")
@@ -297,6 +321,10 @@ def main() -> None:
     if clips_cache_file.exists():
         log("INFO", f"Loading cached clips from {clips_cache_file}")
         clips = json.loads(clips_cache_file.read_text())
+        # update filenames if needed
+        if _ensure_filenames(clips):
+            clips_cache_file.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+            log("OK", f"Patched filenames in cache → {clips_cache_file}")
         log("OK", f"Loaded {len(clips)} clips from cache (skipped LLM)")
     else:
         # LLM analysis
@@ -313,6 +341,8 @@ def main() -> None:
             chunk_duration=args.chunk_duration,
             chunk_overlap=args.chunk_overlap,
         )
+        # ensure metadata has filenames for new clips
+        _ensure_filenames(clips)
 
     if not clips:
         log("WARN", "No engaging clips found. Exiting.")
@@ -381,7 +411,7 @@ def main() -> None:
     else:
         outputs = raw_outputs
 
-    # Save metadata
+    # Save metadata (it should already include filename field)
     output_dir.mkdir(parents=True, exist_ok=True)
     meta = output_dir / "clips.json"
     meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))

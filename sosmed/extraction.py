@@ -59,6 +59,8 @@ def _extract_one(
     safe = re.sub(r"[^\w\s-]", "", clip.get("title", f"clip_{clip['rank']}"))
     safe = re.sub(r"\s+", "_", safe)[:50]
     out_path = output_dir / f"rank{clip['rank']:02d}_{safe}.mp4"
+    # record raw filename in metadata (postprocess can override later)
+    clip["filename"] = out_path.name
 
     # -i first, then -ss/-t  → output seeking. we re-encode rather than copy
     # so that trimming is frame-accurate even when the desired start doesn't

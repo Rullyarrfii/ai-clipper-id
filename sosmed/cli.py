@@ -228,14 +228,14 @@ def main() -> None:
         else:
             outputs = raw_outputs
         
-        # Save metadata
+        # Save metadata (preserve all_clips in file, only processed clips subset)
         output_dir.mkdir(parents=True, exist_ok=True)
         meta = output_dir / "clips.json"
-        meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+        meta.write_text(json.dumps(all_clips, indent=2, ensure_ascii=False))
         
         elapsed_total = time.time() - t_total
         print(f"\n{GREEN}{BOLD}✓ Done!{RESET} "
-              f"{len(outputs)}/{len(clips)} clips extracted → {output_dir}/ "
+              f"{len(outputs)}/{len(clips)} clips extracted (from {len(all_clips)} total) → {output_dir}/ "
               f"({elapsed_total:.0f}s total)")
         if any_postprocess:
             pp_str = []
@@ -363,6 +363,12 @@ def main() -> None:
     else:
         log("OK", "Clip boundaries optimized")
 
+    # 💾 Save metadata early (~as soon as we have final clip information)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta = output_dir / "clips.json"
+    meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+    log("OK", f"Metadata saved early → {meta}")
+
     # Summary table
     print(f"\n{BOLD}{'#':<4} {'Score':<6} {'H/R/S/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
     print("─" * 90)
@@ -411,7 +417,7 @@ def main() -> None:
     else:
         outputs = raw_outputs
 
-    # Save metadata (it should already include filename field)
+    # Save final metadata (includes filenames set by extraction/postprocess)
     output_dir.mkdir(parents=True, exist_ok=True)
     meta = output_dir / "clips.json"
     meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))

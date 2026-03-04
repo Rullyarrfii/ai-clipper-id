@@ -99,9 +99,11 @@ def tighten_clip_boundaries(
     Intelligently adjust clip boundaries to maximize speech content.
     
     This function:
-    1. Removes leading/trailing silence
-    2. Finds the densest speech region (filters out filler at beginning/end)
-    3. Removes large internal gaps (>max_gap seconds of silence)
+    1. Removes leading/trailing silence and sparse speech
+    2. Skips leading filler words for stronger hooks
+    
+    Only trims from the edges — internal content is never discarded,
+    which ensures clip titles stay consistent with actual video content.
     
     Uses word-level timestamps from Whisper - no additional processing needed.
     
@@ -109,8 +111,7 @@ def tighten_clip_boundaries(
         clips: List of clip dicts with 'start' and 'end' keys
         segments: Whisper segments with word-level timestamps
         padding: Small padding (seconds) to keep before first/after last word
-        max_gap: Maximum allowed gap between words (seconds). Gaps larger than
-                this will cause the clip to be trimmed.
+        max_gap: (unused, kept for backward compatibility)
         min_speech_density: Minimum speech density (words per second) for a
                            region to be considered "dense" speech
     
@@ -120,6 +121,17 @@ def tighten_clip_boundaries(
     from typing import Any
     
     for clip in clips:
+        # Always tighten from the ORIGINAL LLM boundaries, not from
+        # previously-tightened ones.  This prevents progressive shrinkage
+        # on re-runs and recovers from any corruption left by older code.
+        if "_llm_start" not in clip:
+            clip["_llm_start"] = clip["start"]
+            clip["_llm_end"]   = clip["end"]
+        else:
+            # Restore original boundaries before re-tightening
+            clip["start"] = clip["_llm_start"]
+            clip["end"]   = clip["_llm_end"]
+
         clip_start = float(clip["start"])
         clip_end = float(clip["end"])
         
@@ -143,53 +155,29 @@ def tighten_clip_boundaries(
         
         words.sort(key=lambda x: x["start"])
         
-        # ── Step 1: Find continuous speech segments (split at large gaps) ────
-        speech_segments: list[list[dict[str, Any]]] = []
-        current_segment: list[dict[str, Any]] = [words[0]]
-        
-        for i in range(1, len(words)):
-            gap = words[i]["start"] - words[i-1]["end"]
-            if gap > max_gap:
-                # Large gap detected - start new segment
-                speech_segments.append(current_segment)
-                current_segment = [words[i]]
-            else:
-                current_segment.append(words[i])
-        
-        if current_segment:
-            speech_segments.append(current_segment)
-        
-        # ── Step 2: Find the densest/longest segment (likely the main content) ─
-        # Filler speech at beginning/end tends to be sparse or short
-        best_segment = max(
-            speech_segments,
-            key=lambda seg: (
-                len(seg),  # Prefer more words
-                seg[-1]["end"] - seg[0]["start"]  # Then longer duration
-            )
-        )
-        
-        # ── Step 3: Within the best segment, trim sparse edges ────────────────
-        # Sometimes there's still filler at the edges of the dense segment
-        # Look for where speech density increases
+        # ── Step 1: Trim sparse edges ────────────────────────────────────────
+        # Only trim leading/trailing low-density regions.  Never discard
+        # internal content — the LLM chose the title/topic based on the
+        # full clip range, so removing middle segments would cause the
+        # title to stop matching the video content.
         
         # Calculate running density (words per 5-second window)
         window_size = 5.0
-        trimmed_words = best_segment
+        trimmed_words = words
         
         # Trim from start: skip low-density beginning
-        for i in range(len(best_segment)):
-            if i + 3 >= len(best_segment):
+        for i in range(len(words)):
+            if i + 3 >= len(words):
                 break  # Need at least a few words for density calculation
             
             # Look at next few words
-            window_words = best_segment[i:min(i+10, len(best_segment))]
+            window_words = words[i:min(i+10, len(words))]
             window_dur = window_words[-1]["end"] - window_words[0]["start"]
             density = len(window_words) / max(window_dur, 0.1)
             
             # If density is good, start from here
             if density >= min_speech_density:
-                trimmed_words = best_segment[i:]
+                trimmed_words = words[i:]
                 break
         
         # Trim from end: skip low-density ending
@@ -206,10 +194,26 @@ def tighten_clip_boundaries(
                 trimmed_words = trimmed_words[:i+1]
                 break
         
-        # ── Step 4: Set new boundaries with padding ───────────────────────────
-        if trimmed_words:
-            new_start = max(clip_start, trimmed_words[0]["start"] - padding)
-            new_end = min(clip_end, trimmed_words[-1]["end"] + padding)
+        # ── Step 4: Hook optimization - skip leading filler words ─────────────
+        # Common filler words that make bad hooks for social media clips
+        filler_words = {
+            "uh", "um", "eh", "ah", "uhm", "em", "hmm", "mm",
+            "jadi", "terus", "nah", "ya", "iya", "oke", "ok",
+            "gitu", "kayak", "maksudnya", "sebentar"
+        }
+        
+        # Skip leading filler words (max 3 words)
+        final_words = trimmed_words
+        for i in range(min(3, len(trimmed_words))):
+            first_word = trimmed_words[i]["word"].lower().strip(".,!?;:")
+            if first_word not in filler_words:
+                final_words = trimmed_words[i:]
+                break
+        
+        # ── Step 5: Set new boundaries with padding ───────────────────────────
+        if final_words:
+            new_start = max(clip_start, final_words[0]["start"] - padding)
+            new_end = min(clip_end, final_words[-1]["end"] + padding)
             
             # Only apply if we're actually improving (tightening by meaningful amount)
             # and not making it too short
@@ -227,7 +231,7 @@ def tighten_clip_boundaries(
 DEFAULT_OPENROUTER_MODEL = "arcee-ai/trinity-large-preview:free"
 DEFAULT_OPENROUTER_BASE  = "https://openrouter.ai/api/v1"
 
-MAX_CLIPS_HARD_LIMIT = 50  # absolute ceiling — quality over quantity
+MAX_CLIPS_HARD_LIMIT = 72  # absolute ceiling — quality over quantity
 
 # Indonesian filler / noise patterns (comprehensive)
 _ID_FILLERS = (

@@ -78,8 +78,9 @@ def _extract_one(
     ]
     # encode with libx264 so ffmpeg will decode up to the requested start
     # and the resulting clip has correct timing/stamps.
-    encode_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "23"]
-    audio_flags = ["-c:a", "aac", "-b:a", "128k"]
+    # Quality: CRF 20 (better than default 23), medium preset for good quality/speed balance
+    encode_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+    audio_flags = ["-c:a", "aac", "-b:a", "192k"]  # Higher bitrate for better audio
     output_flags = ["-movflags", "+faststart", "-loglevel", "error", str(out_path)]
 
     cmd = base_cmd + encode_args + audio_flags + output_flags

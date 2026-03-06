@@ -16,6 +16,7 @@ import os
 import json
 import time
 import pickle
+import random
 import shutil
 import logging
 import argparse
@@ -53,10 +54,12 @@ from config import (
     ENABLE_INSTAGRAM, ENABLE_YOUTUBE, ENABLE_TIKTOK,
 )
 
-# ── Daily upload limits (prevent quota exhaustion & rate limiting) ──
-MAX_DAILY_YOUTUBE_UPLOADS = 6
-MAX_DAILY_INSTAGRAM_UPLOADS = 6
-MAX_DAILY_TIKTOK_UPLOADS = 6
+# ── Daily upload limits (prevent quota exhaustion & shadowbanning) ──
+# 3/day per platform is the sweet spot: enough for growth, low enough to
+# avoid spam-detection heuristics on IG, TT, and YT.
+MAX_DAILY_YOUTUBE_UPLOADS = 3
+MAX_DAILY_INSTAGRAM_UPLOADS = 3
+MAX_DAILY_TIKTOK_UPLOADS = 3
 
 # Track daily upload counts (reset at midnight WIB)
 _daily_counts = {
@@ -65,6 +68,17 @@ _daily_counts = {
     "tiktok": 0,
     "last_reset_date": None,
 }
+
+# Track last upload timestamp per platform (minimum gap enforcement)
+_last_upload_ts: dict[str, float] = {
+    "youtube": 0.0,
+    "instagram": 0.0,
+    "tiktok": 0.0,
+}
+
+# Minimum seconds between consecutive uploads to the same platform.
+# 2 hours keeps us well under spam-detection thresholds.
+MIN_GAP_BETWEEN_UPLOADS_SECS = 2 * 60 * 60  # 2 hours
 
 def reset_daily_counts_if_needed():
     """Reset upload counters at midnight WIB."""
@@ -181,6 +195,20 @@ SCHEDULE_SLOTS = [
     ("07:00", 3, "Morning commute"),
 ]
 
+# ── Day-of-week slot selection ──────────────────────────────
+# Not every slot fires every day.  This keeps the posting pattern
+# looking organic (humans don't post at exact same 6 times daily).
+# Each day randomly picks a subset of slots from the full list.
+# Tier-1 slots are always included; lower tiers are included
+# probabilistically.  The result is 2–4 posts on a typical day
+# instead of a rigid 6.
+DAY_SLOT_PROBABILITY = {
+    # tier -> probability of being active on a given day
+    1: 1.0,    # Tier 1 always fires
+    2: 0.65,   # Tier 2: ~65 % chance per day
+    3: 0.35,   # Tier 3: ~35 % chance per day
+}
+
 # Engagement statistics by day (example values, adjust as needed)
 DAY_ENGAGEMENT = {
     "Monday":    0.85,
@@ -191,6 +219,28 @@ DAY_ENGAGEMENT = {
     "Saturday":  0.88,
     "Sunday":    0.80,
 }
+
+# Keep track of which slots are active today (regenerated at midnight)
+_active_slots: set[str] = set()
+_active_slots_date = None
+
+def refresh_active_slots():
+    """Pick today's active slots based on tier probability.
+
+    Called once per day (or on first run).  Tier-1 slots always survive;
+    lower tiers are coin-flipped according to ``DAY_SLOT_PROBABILITY``.
+    """
+    global _active_slots, _active_slots_date
+    today = datetime.now(pytz.timezone("Asia/Jakarta")).date()
+    if _active_slots_date == today:
+        return
+    _active_slots = set()
+    for slot_time, tier, label in SCHEDULE_SLOTS:
+        prob = DAY_SLOT_PROBABILITY.get(tier, 0.5)
+        if random.random() < prob:
+            _active_slots.add(slot_time)
+    _active_slots_date = today
+    log.info(f"📅 Active slots for {today}: {sorted(_active_slots)} ({len(_active_slots)}/{len(SCHEDULE_SLOTS)})")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -666,6 +716,76 @@ def ensure_shorts_eligible(video_path: str) -> str | None:
     return video_path
 
 
+def unique_ify_video(video_path: str, platform_tag: str = "generic") -> str | None:
+    """Create a unique version of the video to defeat perceptual hash matching.
+
+    Each call produces a different output because every parameter is
+    randomised.  Use a different ``platform_tag`` for each platform so
+    that Instagram, YouTube, and TikTok each receive a distinct file.
+
+    Techniques applied:
+    1. Strip all metadata.
+    2. Random brightness (±0.03) and contrast (0.97–1.03) — wide enough
+       to change the perceptual hash, still imperceptible to viewers.
+    3. Random saturation tweak (0.97–1.03).
+    4. Tiny random crop (1–3 px per side) then scale back — changes the
+       pixel grid so DCT-based hashes differ.
+    5. Re-encode video *and* audio (slight pitch-preserving tempo shift
+       of ±0.5 %) so the audio fingerprint also changes.
+    """
+    base, ext = os.path.splitext(video_path)
+    out_path = f"{base}_unique_{platform_tag}{ext}"
+
+    # --- Video tweaks ---
+    brightness = random.uniform(-0.03, 0.03)
+    contrast = random.uniform(0.97, 1.03)
+    saturation = random.uniform(0.97, 1.03)
+
+    # Tiny random crop (1-3 px per side) → scale back to original dims
+    w, h, _ = probe_video_info(video_path)
+    crop_px = random.randint(1, 3)
+    if w and h:
+        cw, ch = w - 2 * crop_px, h - 2 * crop_px
+        crop_filter = f"crop={cw}:{ch}:{crop_px}:{crop_px},scale={w}:{h}"
+    else:
+        crop_filter = None
+
+    vf_parts = [f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}"]
+    if crop_filter:
+        vf_parts.append(crop_filter)
+    vf_str = ",".join(vf_parts)
+
+    # --- Audio tweak: tiny tempo shift (±0.5 %) to change audio fingerprint ---
+    tempo = random.uniform(0.995, 1.005)
+    af_str = f"atempo={tempo}"
+
+    cmd = [
+        FFMPEG_EXECUTABLE,
+        "-y",
+        "-i", video_path,
+        "-map_metadata", "-1",        # Strip all metadata
+        "-vf", vf_str,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",                 # High quality
+        "-af", af_str,
+        "-c:a", "aac", "-b:a", "192k",  # Re-encode audio
+        out_path,
+    ]
+
+    try:
+        log.info(
+            f"✨ Uniquifying video [{platform_tag}]: {video_path} "
+            f"(bright={brightness:+.3f}, contrast={contrast:.3f}, "
+            f"sat={saturation:.3f}, crop={crop_px}px, tempo={tempo:.4f})"
+        )
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return out_path
+    except Exception as e:
+        log.error(f"❌ Could not uniquify video [{platform_tag}]: {e}")
+        return None
+
+
 def generate_thumbnail(video_path: str, width: int, height: int, suffix: str) -> str | None:
     """Create a still image from ``video_path`` at the requested size.
 
@@ -703,6 +823,29 @@ def generate_thumbnail(video_path: str, width: int, height: int, suffix: str) ->
 #  Upload functions — raw file, no conversion
 # ═══════════════════════════════════════════════════════════
 
+def unique_ify_caption(caption: str) -> str:
+    """Randomize caption to avoid shadowban from exact copy-paste.
+    
+    Adds invisible variations:
+    1. Swaps similar looking characters (Cyrillic homoglyphs)
+    2. Randomly chooses between different separator styles
+    3. Adds a random invisible unicode character or variation selector
+    """
+    # 1. Random invisible character or zero-width space at the end
+    invisibles = ["\u200B", "\u200C", "\u200D", "\uFEFF"]
+    suffix = random.choice(invisibles)
+    
+    # 2. Randomly replace a latin 'o' with a cyrillic 'о' (looks identical)
+    # or 'a' with 'а', etc. Only do one per caption to minimize risk.
+    homoglyphs = {'o': 'о', 'a': 'а', 'e': 'е', 'p': 'р'}
+    char_to_swap = random.choice(list(homoglyphs.keys()))
+    if char_to_swap in caption:
+        # replace only the first occurrence to be subtle
+        caption = caption.replace(char_to_swap, homoglyphs[char_to_swap], 1)
+    
+    return caption + suffix
+
+
 def upload_instagram(video_path: str, clip: dict) -> bool:
     reset_daily_counts_if_needed()
     if _daily_counts["instagram"] >= MAX_DAILY_INSTAGRAM_UPLOADS:
@@ -715,7 +858,8 @@ def upload_instagram(video_path: str, clip: dict) -> bool:
             return False
 
         ig = get_ig_client()
-        ig.clip_upload(path=video_path, caption=clip["caption"], thumbnail=thumbnail_path)
+        unique_caption = unique_ify_caption(clip["caption"])
+        ig.clip_upload(path=video_path, caption=unique_caption, thumbnail=thumbnail_path)
         _daily_counts["instagram"] += 1
         log.info(f"✅ Instagram: {clip['title']} [{_daily_counts['instagram']}/{MAX_DAILY_INSTAGRAM_UPLOADS} today]")
         log.info(f"🖼️ Instagram thumbnail uploaded: {thumbnail_path}")
@@ -754,7 +898,7 @@ def upload_youtube(video_path: str, clip: dict) -> bool:
         if len(title) > 100:
             title = f"{title_base[:91].rstrip()} #Shorts"
 
-        desc = clip["caption"].strip()
+        desc = unique_ify_caption(clip["caption"].strip())
         if "#shorts" not in desc.lower():
             desc = f"{desc}\n\n#Shorts"
         desc = desc[:5000]
@@ -907,9 +1051,10 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
         if not thumbnail_path:
             return False
 
+        unique_caption = unique_ify_caption(clip.get("caption", ""))
         video_dict = {
             "path": video_path,
-            "description": clip.get("caption", "")[:2200],
+            "description": unique_caption[:2200],
             "cover": thumbnail_path,
         }
 
@@ -949,6 +1094,22 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
 # Post ONE clip per time slot (prevents quota exhaustion)
 def make_post_job(slot_time: str, tier: int, label: str):
     def post_job():
+        # --- Day-of-week slot filtering ---
+        refresh_active_slots()
+        if slot_time not in _active_slots:
+            log.info(f"⏭️  Slot {slot_time} not active today — skipping (organic variation)")
+            return
+
+        # --- Shadowban prevention: Jitter ---
+        # Instead of posting exactly at the minute, wait 0-15 minutes
+        jitter_mins = random.randint(0, 15)
+        jitter_secs = random.randint(0, 59)
+        total_wait = (jitter_mins * 60) + jitter_secs
+        
+        log.info(f"🎲 Shadowban protection: delaying post for {jitter_mins}m {jitter_secs}s...")
+        time.sleep(total_wait)
+        # ------------------------------------
+
         now_dt = datetime.now(pytz.timezone("Asia/Jakarta"))
         now = now_dt.strftime("%Y-%m-%d %H:%M:%S WIB")
         day_name = now_dt.strftime("%A")
@@ -966,26 +1127,53 @@ def make_post_job(slot_time: str, tier: int, label: str):
         log.info(f"📹 Posting   : [score={clip.get('class_score', clip.get('clip_score', '?'))}]  rank {clip['rank']}  — {clip['title']}")
         log.info(f"   File      : {clip.get('filename')}")
 
-        results = {}
-        # Run each platform upload in its own try/except to ensure all are attempted
+        # --- Build the list of enabled platforms in RANDOM order ---
+        # Randomising the order prevents a fixed IG→YT→TT fingerprint.
+        platform_fns = []
         if ENABLE_INSTAGRAM:
-            try:
-                results["instagram"] = upload_instagram(video_path, clip)
-            except Exception as e:
-                log.error(f"Exception during Instagram upload: {e}")
-                results["instagram"] = False
+            platform_fns.append(("instagram", upload_instagram))
         if ENABLE_YOUTUBE:
-            try:
-                results["youtube"] = upload_youtube(video_path, clip)
-            except Exception as e:
-                log.error(f"Exception during YouTube upload: {e}")
-                results["youtube"] = False
+            platform_fns.append(("youtube", upload_youtube))
         if ENABLE_TIKTOK:
+            platform_fns.append(("tiktok", upload_tiktok))
+        random.shuffle(platform_fns)
+        log.info(f"📤 Platform order this slot: {[p[0] for p in platform_fns]}")
+
+        results = {}
+        unique_files: list[str] = []  # track all generated files for cleanup
+
+        for idx, (platform_name, upload_fn) in enumerate(platform_fns):
+            # --- Minimum-gap enforcement ---
+            elapsed = time.time() - _last_upload_ts[platform_name]
+            if elapsed < MIN_GAP_BETWEEN_UPLOADS_SECS:
+                wait_remaining = MIN_GAP_BETWEEN_UPLOADS_SECS - elapsed
+                log.warning(
+                    f"⏳ {platform_name}: last upload was {elapsed/60:.0f}m ago "
+                    f"(min gap {MIN_GAP_BETWEEN_UPLOADS_SECS/60:.0f}m) — skipping this slot"
+                )
+                results[platform_name] = False
+                continue
+
+            # --- Per-platform unique video ---
+            unique_path = unique_ify_video(video_path, platform_tag=platform_name)
+            upload_path = unique_path if unique_path else video_path
+            if unique_path:
+                unique_files.append(unique_path)
+
             try:
-                results["tiktok"] = upload_tiktok(video_path, clip)
+                success = upload_fn(upload_path, clip)
+                results[platform_name] = success
+                if success:
+                    _last_upload_ts[platform_name] = time.time()
             except Exception as e:
-                log.error(f"Exception during TikTok upload: {e}")
-                results["tiktok"] = False
+                log.error(f"Exception during {platform_name} upload: {e}")
+                results[platform_name] = False
+
+            # Random pause between platforms (60-180 s) — wider than before
+            if idx < len(platform_fns) - 1:
+                pause = random.randint(60, 180)
+                log.info(f"💤 Pausing {pause}s before next platform...")
+                time.sleep(pause)
 
         ok = sum(bool(v) for v in results.values())
         total = len(results)
@@ -993,6 +1181,15 @@ def make_post_job(slot_time: str, tier: int, label: str):
         
         # Log the upload attempt (success or failure)
         log_upload(clip, video_path, results)
+
+        # Cleanup all unique-ified video files
+        for uf in unique_files:
+            if os.path.exists(uf):
+                try:
+                    os.remove(uf)
+                    log.info(f"🗑️  Removed temporary unique-ified file: {uf}")
+                except Exception as e:
+                    log.warning(f"⚠️  Could not cleanup temporary file {uf}: {e}")
 
         if ok == total and total > 0:
             # All enabled platforms succeeded - remove from queue AND delete files

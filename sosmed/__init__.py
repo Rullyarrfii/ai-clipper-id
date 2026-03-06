@@ -13,7 +13,7 @@ from .llm import find_clips
 from .extraction import extract_clips
 from .postprocess import postprocess_clips
 from .subtitles import generate_ass_subtitles, generate_title_overlay, get_clip_words
-from .utils import log
+from .utils import log, tighten_clip_boundaries
 
 __version__ = "0.2.0"
 __all__ = [
@@ -26,4 +26,5 @@ __all__ = [
     "generate_title_overlay",
     "get_clip_words",
     "log",
+    "tighten_clip_boundaries",
 ]

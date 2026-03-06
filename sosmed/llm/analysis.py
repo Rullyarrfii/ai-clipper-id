@@ -72,7 +72,8 @@ def _build_user_prompt(
 ) -> str:
     """Build the user prompt for LLM."""
     header = (
-        f"Analisis transkrip ini dan EKSTRAK SEBANYAK MUNGKIN momen menarik.\n"
+        f"Analisis transkrip ini dan EKSTRAK SEBANYAK MUNGKIN momen BERPOTENSI VIRAL.\n"
+        f"Fokus: hook kuat di awal, bikin nonton sampai habis, bikin share/comment.\n"
         f"Setiap subtopik yang layak harus jadi klip terpisah.\n"
         f"Durasi: {min_dur}-{max_dur}s. Maks {max_clips} klip. clip_score >= {min_score}.\n"
     )
@@ -82,18 +83,39 @@ def _build_user_prompt(
 
 
 def _compute_clip_score(c: dict[str, Any]) -> int:
-    """Compute clip_score as equal-weight average of all four scores.
+    """Compute clip_score as weighted average tuned for TikTok virality.
 
-    Formula: (informative + energy + newsworthy + easy) / 4
-    All dimensions matter equally for virality.
+    Formula (weights reflect TikTok algorithm priorities):
+      hook*0.25 + retention*0.25 + shareability*0.20 + entertainment*0.20 + clarity*0.10
+
+    Hook + Retention = 50% because TikTok's algorithm heavily rewards
+    watch-through rate (determined by hook strength and content retention).
+    Shareability + Entertainment = 40% for engagement signals.
+    Clarity = 10% baseline for standalone comprehension.
     """
-    easy = int(c.get("score_easy", 0) or 0)
-    info = int(c.get("score_informative", 0) or 0)
-    energy = int(c.get("score_energy", 0) or 0)
-    newsworthy = int(c.get("score_newsworthy", 0) or 0)
-    if easy + info + energy + newsworthy > 0:
-        return round((info + energy + newsworthy + easy) / 4)
-    # Fallback: use clip_score or legacy engagement_score
+    hook = int(c.get("score_hook", 0) or 0)
+    retention = int(c.get("score_retention", 0) or 0)
+    shareability = int(c.get("score_shareability", 0) or 0)
+    entertainment = int(c.get("score_entertainment", 0) or 0)
+    clarity = int(c.get("score_clarity", 0) or 0)
+
+    # Also check legacy field names for backward compatibility
+    if hook + retention + shareability + entertainment + clarity == 0:
+        hook = int(c.get("score_energy", 0) or 0)
+        retention = int(c.get("score_informative", 0) or 0)
+        shareability = int(c.get("score_newsworthy", 0) or 0)
+        clarity = int(c.get("score_easy", 0) or 0)
+        entertainment = hook  # approximate
+
+    total = hook + retention + shareability + entertainment + clarity
+    if total > 0:
+        return round(
+            hook * 0.25
+            + retention * 0.25
+            + shareability * 0.20
+            + entertainment * 0.20
+            + clarity * 0.10
+        )
     return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
 
 
@@ -135,9 +157,14 @@ def _validate_clips(
             s, e = float(c["start"]), float(c["end"])
         except (KeyError, ValueError, TypeError):
             continue
-        c["_score"] = _compute_clip_score(c)
+        score = _compute_clip_score(c)
+        # Penalize low-value clips (intros, outros, disclaimers) — they never go viral
+        if _is_low_value_clip(c):
+            score = max(0, score - 25)
+        c["_score"] = score
         scored_clips.append(c)
-    scored_clips.sort(key=lambda x: -x["_score"])
+    # Tiebreaker: score_hook (stop-scrolling power is #1 virality predictor)
+    scored_clips.sort(key=lambda x: (-x["_score"], -int(x.get("score_hook", 0) or 0)))
 
     for c in scored_clips:
         s, e = float(c["start"]), float(c["end"])
@@ -166,19 +193,23 @@ def _validate_clips(
         c.setdefault("caption", "")
         c.setdefault("reason", "")
         c.setdefault("hook", "")
-        c.setdefault("score_easy", 0)
-        c.setdefault("score_informative", 0)
-        c.setdefault("score_energy", 0)
-        c.setdefault("score_newsworthy", 0)
+        c.setdefault("score_hook", 0)
+        c.setdefault("score_retention", 0)
+        c.setdefault("score_shareability", 0)
+        c.setdefault("score_entertainment", 0)
+        c.setdefault("score_clarity", 0)
         c["clip_score"] = score
         c.pop("_score", None)
         c.pop("engagement_score", None)
+        # Remove legacy score fields if present
+        for legacy in ("score_easy", "score_informative", "score_energy", "score_newsworthy"):
+            c.pop(legacy, None)
         valid.append(c)
         if len(valid) >= max_clips:
             break
 
-    # Re-rank by clip_score
-    valid.sort(key=lambda x: -x.get("clip_score", 0))
+    # Re-rank by clip_score, tiebreak by hook strength (strongest virality signal)
+    valid.sort(key=lambda x: (-x.get("clip_score", 0), -int(x.get("score_hook", 0) or 0)))
     for i, c in enumerate(valid, 1):
         c["rank"] = i
 

@@ -179,9 +179,8 @@ def _postprocess_one(
         escaped_title = _escape_ass_path(title_ass_path)
         vfilters.append(f"ass={escaped_title}")
 
-    # boost audio volume by 10 dB
-    audio_extra_inputs: list[str] = []
-    audio_filter = "volume=20dB" if has_audio else ""
+    # boost audio through loudnorm
+    audio_filter = "loudnorm=I=-14:LRA=10:TP=-1.5" if has_audio else ""
 
     # ── 4. Build FFmpeg command ──────────────────────────────────────────────
     cmd: list[str] = [get_ffmpeg(), "-y", "-hide_banner"]

@@ -42,7 +42,7 @@ Return ONLY valid JSON array with fixed clips, no other text.""",
     "Improve and Deduplicate Clips": """Given clips data in JSON format, perform the following:
 
 1. Improve each clip's content:
-   - Refine titles to be engaging and specific
+   - Do NOT change the "title" field — keep it exactly as-is
    - Enhance captions with power words that drive engagement
    - Ensure topics are clear categories or themes
    - Strengthen hooks for maximum stop-scroll potential

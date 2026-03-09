@@ -179,9 +179,9 @@ def _postprocess_one(
         escaped_title = _escape_ass_path(title_ass_path)
         vfilters.append(f"ass={escaped_title}")
 
-    # audio filters have been removed; we simply pass through audio/video
+    # boost audio volume by 10 dB
     audio_extra_inputs: list[str] = []
-    audio_filter = ""
+    audio_filter = "volume=20dB" if has_audio else ""
 
     # ── 4. Build FFmpeg command ──────────────────────────────────────────────
     cmd: list[str] = [get_ffmpeg(), "-y", "-hide_banner"]
@@ -210,6 +210,10 @@ def _postprocess_one(
                     chain_parts.append(f"[tmp{i-1}]{vf}[tmp{i}]")
             filter_parts.append(";".join(chain_parts))
 
+    # Add audio loudnorm filter to filter_complex
+    if audio_filter and has_audio:
+        filter_parts.append(f"[0:a]{audio_filter}[aout]")
+
     if filter_parts:
         full_filter = ";".join(filter_parts)
         cmd.extend(["-filter_complex", full_filter])
@@ -220,8 +224,10 @@ def _postprocess_one(
         else:
             cmd.extend(["-map", "0:v:0"])
 
-        # keep original audio if present
-        if has_audio:
+        # Use normalized audio if available, otherwise original
+        if has_audio and audio_filter:
+            cmd.extend(["-map", "[aout]"])
+        elif has_audio:
             cmd.extend(["-map", "0:a:0?"])
         else:
             cmd.append("-an")

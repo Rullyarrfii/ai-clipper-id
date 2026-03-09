@@ -179,7 +179,7 @@ def _improve_and_deduplicate(
                     orig = orig_map[key]
                     # Merge: keep all original fields, update with improved content fields
                     merged = orig.copy()
-                    for field in ["title", "topic", "caption", "hook"]:
+                    for field in ["topic", "caption", "hook"]:
                         if field in improved_clip:
                             merged[field] = improved_clip[field]
                     # Ensure rank is recalculated

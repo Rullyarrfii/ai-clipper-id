@@ -1,0 +1,299 @@
+"""
+Process a single video to extract the best clip with overlay subtitles.
+Output: topic and title printed to console.
+Usage: python sosmed/process_single.py path/to/video.mp4 [options]
+"""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+from .transcription import transcribe
+from .prefilter import prefilter_segments
+from .llm import find_clips, fix_and_improve_clips, translate_subtitle_words
+from .extraction import extract_clips, _get_video_duration
+from .postprocess import postprocess_clips
+from .utils import (
+    log, BOLD, RESET, CYAN, GREEN, YELLOW,
+    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries
+)
+
+
+def _get_transcript_cache_path(video_path: str) -> Path:
+    """Return cache path for transcript based on video filename."""
+    video = Path(video_path)
+    cache_dir = Path.cwd() / ".cache" / "ai-video-clipper"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"{video.stem}_transcript.json"
+    return cache_file
+
+
+def process_single_video(
+    video_path: str,
+    model: str = "turbo",
+    lang: str | None = "id",
+    device: str = "auto",
+    compute_type: str = "auto",
+    no_vad: bool = False,
+    vad_min_silence: int = 400,
+    vad_speech_pad: int = 200,
+    batch: int = 16,
+    chunk_duration: float = 360.0,
+    chunk_overlap: float = 60.0,
+    output_dir: str = "output",
+    api_key: str | None = None,
+    llm_model: str | None = None,
+    subtitles: bool = True,
+    subtitle_position: str = "lower",
+) -> dict:
+    """
+    Process a single video and extract the best clip.
+    
+    Returns:
+        dict with keys: 'topic', 'title', 'video_path', 'start', 'end'
+    """
+    video = Path(video_path)
+    if not video.exists():
+        log("ERROR", f"File not found: {video}")
+        sys.exit(1)
+
+    output_path = Path(output_dir) / video.stem
+    
+    print(f"\n{BOLD}{CYAN}{'═' * 50}")
+    print(f"   Single Video Processor")
+    print(f"{'═' * 50}{RESET}")
+    print(f"  Video     : {video.name}")
+    print(f"  Model     : {model}")
+    print(f"  Language  : {lang or 'auto-detect'}")
+    print()
+
+    t_total = time.time()
+
+    # ── 1. Transcribe ────────────────────────────────────────────────────────
+    cache_path = _get_transcript_cache_path(str(video))
+    if cache_path.exists():
+        log("INFO", f"Loading cached transcript from {cache_path}")
+        segments = json.loads(cache_path.read_text())
+        log("OK", f"Loaded {len(segments)} segments from cache")
+    else:
+        segments = transcribe(
+            str(video),
+            model_size=model,
+            language=lang,
+            device=device,
+            compute_type=compute_type,
+            vad_filter=not no_vad,
+            vad_min_silence_ms=vad_min_silence,
+            vad_speech_pad_ms=vad_speech_pad,
+            batch_size=batch,
+        )
+        # Save to cache
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(segments, indent=2, ensure_ascii=False))
+        log("OK", f"Transcript cached → {cache_path}")
+
+    # ── 2. Pre-filter ────────────────────────────────────────────────────────
+    filtered, stats = prefilter_segments(segments)
+    log("OK", f"Pre-filtered: {stats['original']} → {stats['kept']} segments")
+
+    if not filtered:
+        log("ERROR", "All segments filtered out. Try a different whisper model or looser filters.")
+        sys.exit(1)
+
+    # ── 3. LLM analysis ─────────────────────────────────────────────────────
+    output_path.mkdir(parents=True, exist_ok=True)
+    video_dur = _get_video_duration(str(video))
+    
+    clips = find_clips(
+        filtered,
+        min_duration=15,
+        max_duration=60,
+        max_clips=min(10, MAX_CLIPS_HARD_LIMIT),
+        min_score=40,
+        llm_model=llm_model,
+        api_key=api_key,
+        video_duration=video_dur,
+        chunk_duration=chunk_duration,
+        chunk_overlap=chunk_overlap,
+    )
+
+    if not clips:
+        log("WARN", "No engaging clips found. Exiting.")
+        sys.exit(1)
+
+    # Tighten clip boundaries
+    clips = tighten_clip_boundaries(
+        clips, segments,
+        padding=0.15,
+        max_gap=2.0,
+        min_speech_density=0.5,
+    )
+
+    # ── 3b. Improve and fix clips ──────────────────────────────────────
+    log("INFO", "Improving clips: translate to Indonesian, fix captions, deduplicate topics...")
+    clips = fix_and_improve_clips(
+        clips,
+        llm_model=llm_model,
+        api_key=api_key,
+    )
+    log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
+
+    # Select best clip (rank 1)
+    best_clip = clips[0] if clips else None
+    if not best_clip:
+        log("ERROR", "No clips available after improvement")
+        sys.exit(1)
+
+    log("OK", f"Selected best clip: rank {best_clip['rank']} (score: {best_clip.get('clip_score', '?')})")
+    log("OK", f"  Start: {best_clip['start']:.1f}s, End: {best_clip['end']:.1f}s")
+    log("OK", f"  Topic: {best_clip.get('topic', 'N/A')}")
+    log("OK", f"  Title: {best_clip.get('title', 'N/A')}")
+
+    # ── 3c. Translate subtitle words to Indonesian ───────────────────────────
+    if subtitles:
+        from .subtitles import get_clip_words
+        log("INFO", "Translating subtitle words to Indonesian...")
+        raw_words = get_clip_words(
+            segments,
+            clip_start=best_clip["start"],
+            clip_end=best_clip["end"],
+        )
+        best_clip["_subtitle_words"] = translate_subtitle_words(
+            raw_words,
+            llm_model=llm_model,
+            api_key=api_key,
+        )
+        log("OK", f"Subtitle translation complete: {len(best_clip['_subtitle_words'])} words")
+
+    # ── 4. Extract best clip ─────────────────────────────────────────────────
+    log("INFO", "Extracting best clip...")
+    raw_outputs = extract_clips(
+        str(video),
+        [best_clip],  # Only best clip
+        output_dir=output_path,
+        max_workers=1,
+    )
+
+    if not raw_outputs:
+        log("ERROR", "Failed to extract clip")
+        sys.exit(1)
+
+    # ── 5. Post-process with subtitles ──────────────────────────────────
+    if subtitles and raw_outputs:
+        log("INFO", "Adding subtitles overlay...")
+        outputs = postprocess_clips(
+            raw_outputs,
+            [best_clip],
+            segments,
+            output_dir=output_path,
+            subtitles=True,
+            subtitle_position=subtitle_position,
+        )
+    else:
+        outputs = raw_outputs
+
+    elapsed_total = time.time() - t_total
+
+    # ── 6. Output and reporting ─────────────────────────────────────────
+    if outputs:
+        print(f"\n{GREEN}{BOLD}✓ Complete!{RESET}")
+        print(f"  Output: {outputs[0]}")
+        print(f"  Time: {elapsed_total:.0f}s")
+        print()
+        print(f"{BOLD}Topic:{RESET} {best_clip.get('topic', 'N/A')}")
+        print(f"{BOLD}Title:{RESET} {best_clip.get('title', 'N/A')}")
+        print(f"{BOLD}Caption:{RESET} {best_clip.get('caption', 'N/A')}")
+        
+        # Save clip JSON
+        best_clip_path = output_path / "best_clip.json"
+        best_clip_path.write_text(json.dumps(best_clip, indent=2, ensure_ascii=False))
+        log("OK", f"Saved best clip → {best_clip_path}")
+        
+        # Save all clips for reference
+        all_clips_path = output_path / "all_clips.json"
+        all_clips_path.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+        log("OK", f"Saved all {len(clips)} clips → {all_clips_path}")
+        
+        return {
+            "topic": best_clip.get("topic", ""),
+            "title": best_clip.get("title", ""),
+            "video_path": str(outputs[0]),
+            "start": best_clip["start"],
+            "end": best_clip["end"],
+        }
+    else:
+        log("ERROR", "No output generated")
+        sys.exit(1)
+
+
+def main() -> None:
+    """CLI entry point for process_single.py"""
+    ap = argparse.ArgumentParser(
+        description="Process a single video and extract the best clip with overlay subtitles.",
+    )
+    ap.add_argument("video", help="Path to input video")
+    ap.add_argument("--model", default="turbo",
+                    choices=["tiny", "base", "small", "medium",
+                             "large-v2", "large-v3", "distil-large-v3", "turbo"],
+                    help="Whisper model size (default: turbo)")
+    ap.add_argument("--lang", default="id",
+                    help="Language code — 'id' Indonesian, 'en' English, "
+                         "or None for auto-detect (default: id)")
+    ap.add_argument("--device", default="auto",
+                    choices=["auto", "cuda", "cpu"],
+                    help="Compute device (default: auto)")
+    ap.add_argument("--compute-type", default="auto",
+                    choices=["auto", "float16", "int8", "int8_float16"],
+                    help="Compute type (default: auto)")
+    ap.add_argument("--no-vad", action="store_true",
+                    help="Disable VAD filtering for transcription")
+    ap.add_argument("--vad-min-silence", type=int, default=400,
+                    help="VAD min silence duration in ms (default: 400)")
+    ap.add_argument("--vad-speech-pad", type=int, default=200,
+                    help="VAD speech padding in ms (default: 200)")
+    ap.add_argument("--batch", type=int, default=16,
+                    help="Whisper batch size (default: 16; lower if OOM)")
+    ap.add_argument("--chunk-duration", type=float, default=360.0,
+                    help="LLM chunk duration in seconds (default: 360)")
+    ap.add_argument("--chunk-overlap", type=float, default=60.0,
+                    help="Overlap between chunks in seconds (default: 60)")
+    ap.add_argument("--output", default="output",
+                    help="Output directory (default: ./output)")
+    ap.add_argument("--api-key", default=None,
+                    help="API key (overrides env vars)")
+    ap.add_argument("--llm-model", default=None,
+                    help="Override LLM model name for OpenRouter")
+    ap.add_argument("--subtitles", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="TikTok-style word-by-word subtitles (default: on)")
+    ap.add_argument("--subtitle-position", default="lower",
+                    choices=["center", "upper", "lower"],
+                    help="Subtitle position (default: lower)")
+
+    args = ap.parse_args()
+    lang = None if args.lang.lower() == "none" else args.lang
+
+    process_single_video(
+        video_path=args.video,
+        model=args.model,
+        lang=lang,
+        device=args.device,
+        compute_type=args.compute_type,
+        no_vad=args.no_vad,
+        vad_min_silence=args.vad_min_silence,
+        vad_speech_pad=args.vad_speech_pad,
+        batch=args.batch,
+        chunk_duration=args.chunk_duration,
+        chunk_overlap=args.chunk_overlap,
+        output_dir=args.output,
+        api_key=args.api_key,
+        llm_model=args.llm_model,
+        subtitles=args.subtitles,
+        subtitle_position=args.subtitle_position,
+    )
+
+
+if __name__ == "__main__":
+    main()

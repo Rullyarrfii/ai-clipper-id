@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .transcription import transcribe
 from .prefilter import prefilter_segments
-from .llm import find_clips
+from .llm import find_clips, fix_and_improve_clips
 from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
 from .utils import (
@@ -362,6 +362,15 @@ def main() -> None:
         log("OK", f"Removed {time_saved:.1f}s of gaps/filler (avg {time_saved/len(clips):.1f}s per clip)")
     else:
         log("OK", "Clip boundaries optimized")
+
+    # ── 3b. Improve and fix clips ──────────────────────────────────────
+    log("INFO", "Improving clips: translate to Indonesian, fix captions, deduplicate topics...")
+    clips = fix_and_improve_clips(
+        clips,
+        llm_model=args.llm_model,
+        api_key=args.api_key,
+    )
+    log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
     # 💾 Save metadata early (~as soon as we have final clip information)
     output_dir.mkdir(parents=True, exist_ok=True)

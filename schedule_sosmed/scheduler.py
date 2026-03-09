@@ -828,7 +828,7 @@ def unique_ify_video(video_path: str, platform_tag: str = "generic") -> str | No
 def generate_thumbnail(video_path: str, width: int, height: int, suffix: str) -> str | None:
     """Create a still image from ``video_path`` at the requested size.
 
-    Seeks to ~10 % into the video duration to avoid black intros.
+    Seeks to the first frame of the video.
     The thumbnail is scaled to fit within ``width``x``height`` while
     preserving the original aspect ratio, padded with black bars to
     exactly match the target dimensions.
@@ -839,9 +839,9 @@ def generate_thumbnail(video_path: str, width: int, height: int, suffix: str) ->
     base = os.path.splitext(os.path.basename(video_path))[0]
     thumbnail_path = os.path.join(thumbs_dir, f"{base}_{suffix}.jpg")
 
-    # Seek to ~10 % of duration for a representative frame
+    # Seek to the first frame
     _w, _h, duration = probe_video_info(video_path)
-    seek_secs = (duration or 0) * 0.10
+    seek_secs = 0.0
 
     cmd = [
         FFMPEG_EXECUTABLE,
@@ -928,8 +928,8 @@ def upload_youtube(video_path: str, clip: dict) -> bool:
             log.debug(f"Using converted video file for upload: {new_path}")
             video_path = new_path
 
-        # Vertical thumbnail (1080×1920) — correct for YouTube Shorts display
-        thumbnail_path = generate_thumbnail(video_path, 1080, 1920, "youtube")
+        # Landscape thumbnail (1280×720) — standard for YouTube Shorts
+        thumbnail_path = generate_thumbnail(video_path, 1280, 720, "youtube")
         if not thumbnail_path:
             return False
 

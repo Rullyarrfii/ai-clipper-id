@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from .subtitles import generate_ass_subtitles, generate_title_overlay, get_clip_words
+from .subtitles import generate_ass_subtitles, generate_title_overlay
 from .utils import get_ffmpeg, get_ffprobe, log
 
 
@@ -130,11 +130,7 @@ def _postprocess_one(
     # ── 1. Generate subtitles ────────────────────────────────────────────────
     ass_path = None
     if subtitles:
-        words = get_clip_words(
-            segments,
-            clip_start=clip["start"],
-            clip_end=clip["end"],
-        )
+        words = clip["_subtitle_words"]
         if words:
             ass_content = generate_ass_subtitles(
                 words,

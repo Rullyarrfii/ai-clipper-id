@@ -14,6 +14,7 @@ def fix_and_improve_clips(
     clips: list[dict[str, Any]],
     llm_model: str | None = None,
     api_key: str | None = None,
+    detected_language: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Post-process clips to:
@@ -22,6 +23,9 @@ def fix_and_improve_clips(
     3. Improve titles/hooks/captions and deduplicate similar topics
 
     This runs AFTER find_clips() and BEFORE subtitle generation.
+    
+    Args:
+        detected_language: dict with keys "language" and "language_probability" from Whisper
     """
     if not clips:
         log("WARN", "No clips to fix")
@@ -29,9 +33,9 @@ def fix_and_improve_clips(
 
     log("INFO", f"Starting clip fixing pipeline: {len(clips)} clips")
 
-    # Step 1: Translate to Indonesian
+    # Step 1: Translate to Indonesian (skip if already Indonesian)
     log("INFO", "Step 1/3: Translating to Indonesian...")
-    clips = _translate_to_indonesian(clips, llm_model, api_key)
+    clips = _translate_to_indonesian(clips, llm_model, api_key, detected_language)
     log("OK", f"After translation: {len(clips)} clips")
 
     # Step 2: Fix mismatched caption/topic
@@ -56,13 +60,22 @@ def _translate_to_indonesian(
     clips: list[dict[str, Any]],
     llm_model: str | None = None,
     api_key: str | None = None,
+    detected_language: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Translate title, topic, caption, hook to Indonesian if not already Indonesian.
-    Uses language detection from LLM.
+    Skips translation if Whisper detected Indonesian with >60% confidence.
     """
     if not clips:
         return clips
+    
+    # Skip translation if already Indonesian (based on Whisper detection)
+    if detected_language:
+        lang = detected_language.get("language", "").lower()
+        prob = detected_language.get("language_probability", 0.0)
+        if lang == "id" and prob > 0.6:
+            log("OK", f"Language detected as Indonesian (p={prob:.0%}), skipping translation")
+            return clips
 
     # Read the translation prompt from docs/prompts.md
     prompt_text = _read_prompt("Translate to Indonesian")

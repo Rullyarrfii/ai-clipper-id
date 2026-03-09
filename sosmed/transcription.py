@@ -59,12 +59,13 @@ def transcribe(
     vad_min_silence_ms: int = 400,
     vad_speech_pad_ms: int = 200,
     batch_size: int = 16,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Transcribe video with faster-whisper.
 
-    Returns list of segment dicts:
-      [{"start": float, "end": float, "text": str, "words": [...], "no_speech_prob": float}]
+    Returns tuple of (segments, language_info):
+      segments: list[{"start": float, "end": float, "text": str, "words": [...], "no_speech_prob": float}]
+      language_info: {"language": str, "language_probability": float}
 
     Tuned for Indonesian:
     - language defaults to "id" (skip auto-detect overhead)
@@ -172,7 +173,11 @@ def transcribe(
     log("OK",
         f"{duration:.0f}s audio → {len(segments)} segments "
         f"| RTF {rtf:.2f}x | {elapsed:.1f}s")
+    language_info = {
+        "language": info.language or "unknown",
+        "language_probability": float(info.language_probability or 0.0),
+    }
     if info.language:
         log("INFO", f"Language: {info.language} (p={info.language_probability:.0%})")
 
-    return segments
+    return segments, language_info

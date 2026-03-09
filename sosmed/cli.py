@@ -194,7 +194,12 @@ def main() -> None:
         cache_path = _get_transcript_cache_path(str(video))
         if cache_path.exists():
             log("INFO", f"Loading cached transcript from {cache_path}")
-            segments = json.loads(cache_path.read_text())
+            cache_data = json.loads(cache_path.read_text())
+            # Handle both old format (list) and new format (dict with segments and language_info)
+            if isinstance(cache_data, dict) and "segments" in cache_data:
+                segments = cache_data["segments"]
+            else:
+                segments = cache_data  # Old format, just a list
             log("OK", f"Loaded {len(segments)} segments from cache")
         else:
             # Fall back to minimal segments covering clip ranges
@@ -272,12 +277,19 @@ def main() -> None:
 
     # Check for cached transcript
     cache_path = _get_transcript_cache_path(str(video))
+    detected_language = {"language": "unknown", "language_probability": 0.0}
     if cache_path.exists():
         log("INFO", f"Loading cached transcript from {cache_path}")
-        segments = json.loads(cache_path.read_text())
+        cache_data = json.loads(cache_path.read_text())
+        # Handle both old format (list) and new format (dict with segments and language_info)
+        if isinstance(cache_data, dict) and "segments" in cache_data:
+            segments = cache_data["segments"]
+            detected_language = cache_data.get("language_info", detected_language)
+        else:
+            segments = cache_data  # Old format, just a list
         log("OK", f"Loaded {len(segments)} segments from cache")
     else:
-        segments = transcribe(
+        segments, detected_language = transcribe(
             str(video),
             model_size=args.model,
             language=lang,
@@ -288,9 +300,10 @@ def main() -> None:
             vad_speech_pad_ms=args.vad_speech_pad,
             batch_size=args.batch,
         )
-        # Save to cache
+        # Save to cache (new format with language info)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(segments, indent=2, ensure_ascii=False))
+        cache_data = {"segments": segments, "language_info": detected_language}
+        cache_path.write_text(json.dumps(cache_data, indent=2, ensure_ascii=False))
         log("OK", f"Transcript cached → {cache_path}")
 
     if args.save_transcript:
@@ -369,6 +382,7 @@ def main() -> None:
         clips,
         llm_model=args.llm_model,
         api_key=args.api_key,
+        detected_language=detected_language,
     )
     log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 

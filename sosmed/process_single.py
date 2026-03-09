@@ -42,6 +42,8 @@ def process_single_video(
     batch: int = 16,
     chunk_duration: float = 360.0,
     chunk_overlap: float = 60.0,
+    min_duration: int = 5,
+    max_duration: int = 60,
     output_dir: str = "output",
     api_key: str | None = None,
     llm_model: str | None = None,
@@ -73,12 +75,19 @@ def process_single_video(
 
     # ── 1. Transcribe ────────────────────────────────────────────────────────
     cache_path = _get_transcript_cache_path(str(video))
+    detected_language = {"language": "unknown", "language_probability": 0.0}
     if cache_path.exists():
         log("INFO", f"Loading cached transcript from {cache_path}")
-        segments = json.loads(cache_path.read_text())
+        cache_data = json.loads(cache_path.read_text())
+        # Handle both old format (list) and new format (dict with segments and language_info)
+        if isinstance(cache_data, dict) and "segments" in cache_data:
+            segments = cache_data["segments"]
+            detected_language = cache_data.get("language_info", detected_language)
+        else:
+            segments = cache_data  # Old format, just a list
         log("OK", f"Loaded {len(segments)} segments from cache")
     else:
-        segments = transcribe(
+        segments, detected_language = transcribe(
             str(video),
             model_size=model,
             language=lang,
@@ -89,9 +98,10 @@ def process_single_video(
             vad_speech_pad_ms=vad_speech_pad,
             batch_size=batch,
         )
-        # Save to cache
+        # Save to cache (new format with language info)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(segments, indent=2, ensure_ascii=False))
+        cache_data = {"segments": segments, "language_info": detected_language}
+        cache_path.write_text(json.dumps(cache_data, indent=2, ensure_ascii=False))
         log("OK", f"Transcript cached → {cache_path}")
 
     # ── 2. Pre-filter ────────────────────────────────────────────────────────
@@ -137,6 +147,7 @@ def process_single_video(
         clips,
         llm_model=llm_model,
         api_key=api_key,
+        detected_language=detected_language,
     )
     log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
@@ -259,6 +270,10 @@ def main() -> None:
                     help="LLM chunk duration in seconds (default: 360)")
     ap.add_argument("--chunk-overlap", type=float, default=60.0,
                     help="Overlap between chunks in seconds (default: 60)")
+    ap.add_argument("--min-duration", type=int, default=5,
+                    help="Minimum clip duration in seconds (default: 5)")
+    ap.add_argument("--max-duration", type=int, default=180,
+                    help="Maximum clip duration in seconds (default: 180)")
     ap.add_argument("--output", default="output",
                     help="Output directory (default: ./output)")
     ap.add_argument("--api-key", default=None,
@@ -285,6 +300,8 @@ def main() -> None:
         vad_min_silence=args.vad_min_silence,
         vad_speech_pad=args.vad_speech_pad,
         batch=args.batch,
+        min_duration=args.min_duration,
+        max_duration=args.max_duration,
         chunk_duration=args.chunk_duration,
         chunk_overlap=args.chunk_overlap,
         output_dir=args.output,

@@ -1,7 +1,9 @@
 client_secrets.json
 ig_session.json
+ig_session_device.json
 ig_cred.json
 tiktok_cookies.json
+ig_cookies.txt
 yt_token.pickle
 tiktok_cookies.txt
 tiktok_browser_data/

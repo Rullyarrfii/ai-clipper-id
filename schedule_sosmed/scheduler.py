@@ -23,10 +23,9 @@ import argparse
 import schedule
 import pytz
 import subprocess
+import requests
 from datetime import datetime, timezone
 
-from instagrapi import Client as IGClient
-from instagrapi.exceptions import LoginRequired
 import googleapiclient.discovery
 import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
@@ -36,7 +35,7 @@ import atexit
 
 from config import (
     CLIPS_FOLDER,
-    INSTAGRAM_CREDENTIAL_FILE, INSTAGRAM_SESSION_FILE,
+    INSTAGRAM_SESSION_FILE,
     YOUTUBE_CLIENT_SECRETS, YOUTUBE_TOKEN_FILE, YOUTUBE_CATEGORY_ID,
     YOUTUBE_CHANNEL_HANDLE,
     YOUTUBE_PRIVACY_STATUS,
@@ -91,6 +90,29 @@ _last_upload_ts: dict[str, float] = {
 # accommodating up to 15-min jitter on 2-hour-spaced slots
 # (worst case: 2 h − 15 min jitter = 1 h 45 min > 90 min ✓).
 MIN_GAP_BETWEEN_UPLOADS_SECS = 90 * 60  # 90 minutes
+
+# ─────────────────────────────────────────────────────────────────────────
+# Human-like delays (stealth)
+# ─────────────────────────────────────────────────────────────────────────
+
+def _human_pause(min_s: float = 1.5, max_s: float = 4.0) -> None:
+    """Random pause between requests to appear human-like."""
+    time.sleep(random.uniform(min_s, max_s))
+
+
+def _post_login_cooldown() -> None:
+    """Cool-down after successful login to avoid triggering spam detection."""
+    wait = random.uniform(1, 3)
+    log.debug(f"⏳ Post-login cooldown: {wait:.1f}s")
+    time.sleep(wait)
+
+
+def _inter_platform_delay() -> None:
+    """Delay between platform uploads (60-180s) to avoid fingerprinting."""
+    wait = random.randint(60, 180)
+    log.info(f"💤 Pausing {wait}s before next platform...")
+    time.sleep(wait)
+
 
 def reset_daily_counts_if_needed():
     """Reset upload counters and draw a fresh daily target at midnight WIB."""
@@ -549,64 +571,94 @@ def mark_done(clip: dict, delete_files: bool = True) -> bool:
 #  Auth helpers
 # ═══════════════════════════════════════════════════════════
 
-def get_ig_client() -> IGClient:
-    cl = IGClient()
-    if os.path.exists(INSTAGRAM_SESSION_FILE):
-        cl.load_settings(INSTAGRAM_SESSION_FILE)
-        try:
-            cl.get_timeline_feed()
-            return cl
-        except LoginRequired:
-            log.warning("Instagram session expired, re-logging in ...")
-            # Create fresh client instance for re-login
-            cl = IGClient()
+def load_instagram_credentials() -> dict | None:
+    """Load Instagram credentials from ig_session.json.
     
-    # Load credentials from JSON file
-    with open(INSTAGRAM_CREDENTIAL_FILE, "r", encoding="utf-8") as f:
-        creds = json.load(f)
+    Returns a dict with 'IG_USER_ID' and 'ACCESS_TOKEN' keys, or None if not found.
+    """
+    if not os.path.exists(INSTAGRAM_SESSION_FILE):
+        log.error(f"❌ Instagram credentials file not found: {INSTAGRAM_SESSION_FILE}")
+        return None
     
     try:
-        cl.login(creds["username"], creds["password"])
-        cl.dump_settings(INSTAGRAM_SESSION_FILE)
+        with open(INSTAGRAM_SESSION_FILE, "r", encoding="utf-8") as f:
+            creds = json.load(f)
+        
+        if "IG_USER_ID" not in creds or "ACCESS_TOKEN" not in creds:
+            log.error(f"❌ Missing IG_USER_ID or ACCESS_TOKEN in {INSTAGRAM_SESSION_FILE}")
+            return None
+        
+        return creds
     except Exception as e:
-        log.error(f"Instagram login failed: {e}")
-        if "403" in str(e) or "login_required" in str(e):
-            log.error("   Instagram may be blocking automated logins. Try:")
-            log.error("   1. Delete ig_session.json and try again")
-            log.error("   2. Verify credentials in ig_cred.json are correct")
-            log.error("   3. Login manually to Instagram from your IP address first")
-            log.error("   4. Wait a few hours before retrying (rate limit)")
-        raise
-    return cl
+        log.error(f"❌ Failed to load Instagram credentials: {e}")
+        return None
+
+
 
 
 def get_youtube_client():
+    """
+    Get authenticated YouTube client using explicit auth strategy (no fallback).
+    
+    Priority:
+      1. Saved token with valid scopes
+      2. Refresh if expired
+      3. Fresh OAuth flow
+    """
     credentials = None
+    
+    # Try loading saved token
     if os.path.exists(YOUTUBE_TOKEN_FILE):
-        with open(YOUTUBE_TOKEN_FILE, "rb") as f:
-            credentials = pickle.load(f)
-        # ensure scopes match what we currently ask for
-        if credentials and hasattr(credentials, "scopes"):
-            existing = set(credentials.scopes or [])
-            needed = set(YOUTUBE_SCOPES)
-            if not needed.issubset(existing):
-                log.warning("Existing YouTube token lacking required scopes; deleting and re-authenticating.")
-                try:
-                    os.remove(YOUTUBE_TOKEN_FILE)
-                except OSError:
-                    pass
+        log.debug(f"📂  Loading saved YouTube token...")
+        try:
+            with open(YOUTUBE_TOKEN_FILE, "rb") as f:
+                credentials = pickle.load(f)
+        except Exception as e:
+            log.warning(f"⚠️  Cannot load token file: {e}")
+            credentials = None
+    
+    # Validate and check scopes
+    if credentials:
+        needed_scopes = set(YOUTUBE_SCOPES)
+        existing_scopes = set(credentials.scopes or [])
+        if not needed_scopes.issubset(existing_scopes):
+            log.warning(f"⚠️  Token missing required scopes {needed_scopes - existing_scopes}")
+            credentials = None
+    
+    # Attempt refresh if token exists but is expired
+    if credentials and hasattr(credentials, "refresh_token") and credentials.refresh_token:
+        if credentials.expired:
+            log.debug(f"🔄  Refreshing expired YouTube token...")
+            try:
+                _human_pause(1, 2)
+                credentials.refresh(Request())
+                with open(YOUTUBE_TOKEN_FILE, "wb") as f:
+                    pickle.dump(credentials, f)
+                log.info(f"✅ YouTube token refreshed")
+                return googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
+            except Exception as e:
+                log.warning(f"⚠️  Token refresh failed: {e}")
                 credentials = None
-    if not credentials or not credentials.valid:
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        else:
-            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
-                YOUTUBE_CLIENT_SECRETS, YOUTUBE_SCOPES
-            )
-            credentials = flow.run_local_server(port=0)
+    
+    # If token is valid and not expired, use it
+    if credentials and credentials.valid:
+        log.debug(f"🔐  Using existing valid YouTube token")
+        return googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
+    
+    # No valid credentials — explicit OAuth flow (not fallback)
+    log.info(f"📋️  Starting fresh YouTube OAuth flow...")
+    try:
+        flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
+            YOUTUBE_CLIENT_SECRETS, YOUTUBE_SCOPES
+        )
+        credentials = flow.run_local_server(port=0)
         with open(YOUTUBE_TOKEN_FILE, "wb") as f:
             pickle.dump(credentials, f)
-    return googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
+        log.info(f"✅ YouTube OAuth complete, token saved")
+        return googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
+    except Exception as e:
+        log.error(f"❌ YouTube OAuth failed: {e}")
+        raise
 
 
 def validate_youtube_channel(yt) -> bool:
@@ -888,63 +940,193 @@ def unique_ify_caption(caption: str) -> str:
 
 
 def upload_instagram(video_path: str, clip: dict) -> bool:
+    """Upload a clip to Instagram Reels using Graph API with resumable upload."""
     reset_daily_counts_if_needed()
     if _daily_counts["instagram"] >= _daily_target:
         log.warning(f"⚠️  Instagram daily limit reached ({_daily_target}/day) — skipping")
         return False
     
     try:
-        thumbnail_path = generate_thumbnail(video_path, 1080, 1920, "instagram")
-        if not thumbnail_path:
+        log.debug(f"📹 Instagram: preparing upload for {clip.get('filename')}...")
+        
+        # Load credentials from ig_session.json
+        creds = load_instagram_credentials()
+        if not creds:
+            log.error(f"❌ Instagram: failed to load credentials")
             return False
-
-        ig = get_ig_client()
+        
+        ig_user_id = creds.get("IG_USER_ID")
+        access_token = creds.get("ACCESS_TOKEN")
+        
+        if not ig_user_id or not access_token:
+            log.error(f"❌ Instagram: missing IG_USER_ID or ACCESS_TOKEN in credentials")
+            return False
+        
+        # Get file size for resumable upload
+        try:
+            file_size = os.path.getsize(video_path)
+        except OSError as e:
+            log.error(f"❌ Instagram: cannot access video file: {e}")
+            return False
+        
         unique_caption = unique_ify_caption(clip.get("caption", ""))
-        ig.clip_upload(path=video_path, caption=unique_caption, thumbnail=thumbnail_path)
+        
+        log.info(f"📤 Instagram: initiating resumable upload for {clip.get('title', '?')}...")
+        _human_pause(1, 3)
+        
+        # Step 1: Initiate resumable upload
+        init_response = requests.post(
+            f"https://graph.facebook.com/v25.0/{ig_user_id}/media",
+            params={"access_token": access_token},
+            json={
+                "media_type": "REELS",
+                "upload_type": "resumable",
+                "caption": unique_caption,
+                "file_size": file_size,
+            },
+            timeout=30
+        )
+        
+        if init_response.status_code != 200:
+            log.error(f"❌ Instagram: init request failed ({init_response.status_code}): {init_response.text}")
+            return False
+        
+        try:
+            init_data = init_response.json()
+        except ValueError as e:
+            log.error(f"❌ Instagram: invalid JSON response: {e}")
+            return False
+        
+        upload_url = init_data.get("uri")
+        creation_id = init_data.get("id")
+        
+        if not upload_url or not creation_id:
+            log.error(f"❌ Instagram: missing uri or id in init response: {init_data}")
+            return False
+        
+        log.debug(f"📋 Instagram: creation_id={creation_id}, upload_url={upload_url[:50]}...")
+        
+        # Step 2: Upload the video file
+        _human_pause(2, 4)
+        try:
+            with open(video_path, "rb") as f:
+                file_data = f.read()
+        except IOError as e:
+            log.error(f"❌ Instagram: cannot read video file: {e}")
+            return False
+        
+        upload_response = requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"OAuth {access_token}",
+                "offset": "0",
+                "file_size": str(file_size),
+            },
+            data=file_data,
+            timeout=300  # 5 min timeout for large file uploads
+        )
+        
+        if upload_response.status_code not in [200, 201]:
+            log.error(f"❌ Instagram: file upload failed ({upload_response.status_code}): {upload_response.text}")
+            return False
+        
+        log.debug(f"✅ Instagram: file upload completed")
+        _human_pause(2, 3)
+        
+        # Step 3: Publish the media
+        publish_response = requests.post(
+            f"https://graph.facebook.com/v25.0/{ig_user_id}/media_publish",
+            params={
+                "creation_id": creation_id,
+                "access_token": access_token,
+            },
+            timeout=30
+        )
+        
+        if publish_response.status_code != 200:
+            log.error(f"❌ Instagram: publish request failed ({publish_response.status_code}): {publish_response.text}")
+            return False
+        
+        try:
+            publish_data = publish_response.json()
+        except ValueError as e:
+            log.error(f"❌ Instagram: invalid JSON in publish response: {e}")
+            return False
+        
+        media_id = publish_data.get("id")
+        if not media_id:
+            log.warning(f"⚠️ Instagram: publish succeeded but no media_id returned")
+        else:
+            log.debug(f"📺 Instagram: media_id={media_id}")
+        
+        _post_login_cooldown()
         _daily_counts["instagram"] += 1
-        log.info(f"✅ Instagram: {clip.get('title', '?')} [{_daily_counts['instagram']}/{_daily_target} today]")
-        log.info(f"🖼️ Instagram thumbnail uploaded: {thumbnail_path}")
+        log.info(f"✅ Instagram: {clip.get('title', '?')} uploaded successfully [{_daily_counts['instagram']}/{_daily_target} today]")
         return True
-    except Exception as e:
-        log.error(f"❌ Instagram failed: {e}")
+        
+    except requests.exceptions.Timeout:
+        log.error(f"❌ Instagram: request timeout")
         return False
+    except requests.exceptions.ConnectionError as e:
+        log.error(f"❌ Instagram: connection error: {e}")
+        return False
+    except requests.exceptions.HTTPError as e:
+        log.error(f"❌ Instagram: HTTP error: {e}")
+        return False
+    except Exception as e:
+        log.error(f"❌ Instagram: {type(e).__name__}: {e}")
+        return False
+
 
 
 def upload_youtube(video_path: str, clip: dict) -> bool:
+    """Upload a clip to YouTube Shorts with stealth measures."""
     reset_daily_counts_if_needed()
     if _daily_counts["youtube"] >= _daily_target:
-        log.warning(f"⚠️  YouTube daily quota limit reached ({_daily_target}/day) — skipping")
+        log.warning(f"⚠️  YouTube daily limit reached ({_daily_target}/day) — skipping")
         return False
     
     try:
+        log.debug(f"📹 YouTube: preparing upload for {clip.get('filename')}...")
+        
+        # Get and validate YouTube client
+        _human_pause(1, 2)
         yt = get_youtube_client()
         if not validate_youtube_channel(yt):
+            log.error(f"❌ YouTube: channel validation failed")
             return False
-
+        
+        # Ensure vertical format
         new_path = ensure_shorts_eligible(video_path)
         if not new_path:
+            log.error(f"❌ YouTube: video not eligible for Shorts format")
             return False
         if new_path != video_path:
-            log.debug(f"Using converted video file for upload: {new_path}")
+            log.info(f"✨ Using converted video for upload: {new_path}")
             video_path = new_path
-
-        # Landscape thumbnail (1280×720) — standard for YouTube Shorts
+        
+        # Generate thumbnail
         thumbnail_path = generate_thumbnail(video_path, 1280, 720, "youtube")
         if not thumbnail_path:
+            log.error(f"❌ YouTube: failed to generate thumbnail")
             return False
-
+        
+        # Prepare metadata
         title_base = clip.get("title", "").strip()
         title = f"{title_base} #Shorts"
         if len(title) > 100:
             title = f"{title_base[:91].rstrip()} #Shorts"
-
+        
         desc = unique_ify_caption(clip.get("caption", "").strip())
         if "#shorts" not in desc.lower():
             desc = f"{desc}\n\n#Shorts"
         desc = desc[:5000]
-
+        
         tags = ["Shorts", "shorts", "AI", "Indonesia", "fyp", "viral"]
-
+        
+        log.info(f"📤 YouTube: uploading {title[:50]}...")
+        _human_pause(2, 5)  # Pre-upload pause
+        
         req = yt.videos().insert(
             part="snippet,status,recordingDetails",
             body={
@@ -976,29 +1158,34 @@ def upload_youtube(video_path: str, clip: dict) -> bool:
             notifySubscribers=YOUTUBE_NOTIFY_SUBSCRIBERS,
         )
         resp = req.execute()
-
+        
+        # Upload thumbnail
+        _human_pause(1, 3)
         yt.thumbnails().set(
             videoId=resp["id"],
             media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg"),
         ).execute()
-
+        
+        _post_login_cooldown()
         _daily_counts["youtube"] += 1
         log.info(f"✅ YouTube: https://youtube.com/shorts/{resp['id']} [{_daily_counts['youtube']}/{_daily_target} today]")
-        log.info(f"🖼️ YouTube thumbnail uploaded: {thumbnail_path}")
+        log.info(f"🖼️ YouTube thumbnail: {thumbnail_path}")
         return True
+        
+    except RateLimitError:
+        log.error(f"❌ YouTube: API rate limited, backing off...")
+        wait = random.uniform(120, 300)
+        time.sleep(wait)
+        return False
     except Exception as e:
         error_str = str(e)
         if "quotaExceeded" in error_str or "403" in error_str:
-            log.error("❌ YouTube failed: Daily API quota exceeded")
-            log.error("   YouTube API has a daily quota limit (10,000 units/day)")
-            log.error("   Video uploads cost 1,600 units each (~6 uploads/day max)")
-            log.error("   Quota resets at midnight Pacific Time (PT)")
-            log.error("   Solutions:")
-            log.error("   1. Wait until quota resets (check: https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas)")
-            log.error("   2. Request quota increase via Google Cloud Console")
-            log.error("   3. Disable YouTube uploads temporarily in config.py")
+            log.error("❌ YouTube: Daily API quota exceeded")
+            log.error("   YouTube API has 10,000 units/day; video uploads = 1,600 units each (~6/day max)")
+            log.error("   Quota resets at midnight PT")
+            log.error("   Check: https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas")
         else:
-            log.error(f"❌ YouTube failed: {e}")
+            log.error(f"❌ YouTube: {e}")
         return False
 
 
@@ -1026,12 +1213,10 @@ def ensure_vertical(video_path: str) -> str | None:
 
 
 def upload_tiktok(video_path: str, clip: dict) -> bool:
-    """Upload a clip using the tiktok-uploader library with TikTokUploader class.
+    """Upload a clip to TikTok with stealth measures and robust error handling.
 
-    This uses the class-based API which provides better control over the upload
-    process and proper context management.
-    
-    Each upload gets a fresh browser instance to avoid asyncio event loop corruption.
+    Uses TikTokUploader class for proper context management. Each upload
+    gets a fresh browser instance to avoid asyncio event loop corruption.
     """
     reset_daily_counts_if_needed()
     if _daily_counts["tiktok"] >= _daily_target:
@@ -1039,21 +1224,33 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
         return False
     
     try:
+        log.debug(f"📹 TikTok: preparing upload for {clip.get('filename')}...")
+        
+        # Ensure vertical format
         video_path = ensure_vertical(video_path)
         if not video_path:
+            log.error(f"❌ TikTok: cannot convert video to vertical format")
             return False
-
+        
+        # Validate cookies file exists
         if not os.path.exists(TIKTOK_COOKIES_FILE):
-            log.error(f"❌ TikTok failed: cookies file not found: {TIKTOK_COOKIES_FILE}")
-            log.error("   Re-export cookies from tiktok.com and save to that exact path.")
+            log.error(f"❌ TikTok: cookies file not found: {TIKTOK_COOKIES_FILE}")
+            log.error("   Export cookies from tiktok.com (Netscape format) and save to that path")
             return False
-
-        def cookies_expired(path: str) -> bool:
+        
+        # Check cookie expiration
+        def validate_tiktok_cookies(path: str) -> bool:
+            """Validate TikTok cookies have required keys and aren't expired."""
             now = time.time()
             expiring_soon = now + (7 * 24 * 60 * 60)  # Warn if expires within 7 days
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
+                    content = f.read()
+                    if "sessionid" not in content or "ttwid" not in content:
+                        log.error(f"⚠️  TikTok: cookies missing required keys (sessionid, ttwid)")
+                        return False
+                    
+                    for line in content.split('\n'):
                         line = line.strip()
                         if not line or line.startswith("#"):
                             continue
@@ -1066,63 +1263,62 @@ def upload_tiktok(video_path: str, clip: dict) -> bool:
                                 continue
                             if name in ("sessionid", "ttwid"):
                                 if expires < now:
-                                    return True
+                                    log.error(f"❌ TikTok: cookie '{name}' is expired")
+                                    return False
                                 elif expires < expiring_soon:
                                     days_left = (expires - now) / (24 * 60 * 60)
-                                    log.warning(f"⚠️  TikTok cookie '{name}' expires in {days_left:.1f} days - refresh soon!")
-            except Exception:
+                                    log.warning(f"⚠️  TikTok: cookie '{name}' expires in {days_left:.1f} days")
                 return True
+            except Exception as e:
+                log.error(f"❌ TikTok: cannot validate cookies: {e}")
+                return False
+        
+        if not validate_tiktok_cookies(TIKTOK_COOKIES_FILE):
+            log.error("   Re-export fresh cookies and retry")
             return False
-
-        if cookies_expired(TIKTOK_COOKIES_FILE):
-            log.error("❌ TikTok failed: cookies file appears expired.")
-            log.error("   Re-login to tiktok.com, export fresh cookies (Netscape), overwrite tiktok_cookies.txt, then retry.")
-            return False
-
-        with open(TIKTOK_COOKIES_FILE, "r", encoding="utf-8") as f:
-            cookie_content = f.read()
-        missing = [cookie for cookie in ("sessionid", "ttwid") if cookie not in cookie_content]
-        if missing:
-            log.error(f"❌ TikTok failed: cookies file missing required keys: {missing}")
-            log.error("   Open tiktok.com in browser, login, then export cookies again (Netscape format).")
-            return False
-
+        
+        # Generate thumbnail
         thumbnail_path = generate_thumbnail(video_path, 1080, 1920, "tiktok")
         if not thumbnail_path:
+            log.error(f"❌ TikTok: failed to generate thumbnail")
             return False
-
+        
         unique_caption = unique_ify_caption(clip.get("caption", ""))
         video_dict = {
             "path": video_path,
             "description": unique_caption[:2200],
             "cover": thumbnail_path,
         }
-
-        # Create a fresh uploader instance for each upload and use context manager
-        # to guarantee proper cleanup. This prevents asyncio event loop corruption
-        # which was causing "Playwright Sync API inside asyncio loop" errors.
+        
+        log.info(f"📤 TikTok: uploading {clip.get('title', '?')}...")
+        _human_pause(2, 5)  # Pre-upload pause
+        
+        # Create TikTok uploader and upload with retries
         with TikTokUploader(
             cookies=TIKTOK_COOKIES_FILE,
             headless=True,
             user_data_dir=TIKTOK_BROWSER_DATA_DIR,
         ) as uploader:
-            # allow a couple of overall retries to handle flaky navigation or
-            # temporary TikTok hiccups (also covers the video-set retry).
             failed = uploader.upload_videos([video_dict], num_retries=2, skip_interactivity=True)
-
+            
             if failed:
-                log.error(f"❌ TikTok upload failed: {failed}")
+                log.error(f"❌ TikTok: upload failed after retries")
                 return False
-
+            
+            _post_login_cooldown()
             _daily_counts["tiktok"] += 1
             log.info(f"✅ TikTok: {clip.get('title', '?')} [{_daily_counts['tiktok']}/{_daily_target} today]")
-            log.info(f"🖼️ TikTok cover uploaded: {thumbnail_path}")
+            log.info(f"🖼️ TikTok cover: {thumbnail_path}")
             return True
+            
     except Exception as e:
-        log.error(f"❌ TikTok failed: {e}")
-        if "No valid authentication source found" in str(e):
-            log.error("   TikTok cookies likely expired or no longer valid for upload.")
-            log.error("   Re-login to tiktok.com, export fresh cookies (Netscape), overwrite tiktok_cookies.txt, then retry.")
+        error_str = str(e)
+        if "No valid authentication" in error_str or "expired" in error_str.lower():
+            log.error(f"❌ TikTok: cookies invalid or expired")
+            log.error("   Re-export fresh cookies from tiktok.com (Netscape format)")
+            log.error("   Save to: {TIKTOK_COOKIES_FILE}")
+        else:
+            log.error(f"❌ TikTok: {e}")
         return False
 
 
@@ -1188,113 +1384,135 @@ def make_post_job(slot_time: str, tier: int, label: str):
             if elapsed < MIN_GAP_BETWEEN_UPLOADS_SECS:
                 wait_remaining = MIN_GAP_BETWEEN_UPLOADS_SECS - elapsed
                 log.warning(
-                    f"⏳ {platform_name}: last upload was {elapsed/60:.0f}m ago "
-                    f"(min gap {MIN_GAP_BETWEEN_UPLOADS_SECS/60:.0f}m) — skipping this slot"
+                    f"⏳ {platform_name}: last upload {elapsed/60:.0f}m ago; "
+                    f"gap required {MIN_GAP_BETWEEN_UPLOADS_SECS/60:.0f}m — skipping this slot"
                 )
                 results[platform_name] = False
                 continue
-
+            
             # --- Per-platform unique video ---
-            unique_path = unique_ify_video(video_path, platform_tag=platform_name)
-            upload_path = unique_path if unique_path else video_path
-            if unique_path:
-                unique_files.append(unique_path)
-
+            try:
+                unique_path = unique_ify_video(video_path, platform_tag=platform_name)
+                upload_path = unique_path if unique_path else video_path
+                if unique_path:
+                    unique_files.append(unique_path)
+                    log.debug(f"✨ Generated unique-ified video [{platform_name}]: {unique_path}")
+            except Exception as e:
+                log.error(f"❌ Failed to create unique-ified video [{platform_name}]: {e}")
+                results[platform_name] = False
+                continue
+            
+            # --- Upload to platform ---
             try:
                 success = upload_fn(upload_path, clip)
                 results[platform_name] = success
                 if success:
                     _last_upload_ts[platform_name] = time.time()
             except Exception as e:
-                log.error(f"Exception during {platform_name} upload: {e}")
+                log.error(f"❌ Uncaught exception during {platform_name} upload: {e}")
                 results[platform_name] = False
-
-            # Random pause between platforms (60-180 s) — wider than before
+            
+            # --- Pause between platforms ---
             if idx < len(platform_fns) - 1:
-                pause = random.randint(60, 180)
-                log.info(f"💤 Pausing {pause}s before next platform...")
-                time.sleep(pause)
+                _inter_platform_delay()
 
         ok = sum(bool(v) for v in results.values())
         total = len(results)
-        log.info(f"📊 {ok}/{total} platforms succeeded — {results}")
+        log.info(f"📊 Upload summary: {ok}/{total} platforms succeeded — {results}")
         
-        # Log the upload attempt (success or failure)
-        log_upload(clip, video_path, results)
-
-        # Cleanup all unique-ified video files
+        # --- Log upload attempt ---
+        try:
+            log_upload(clip, video_path, results)
+        except Exception as e:
+            log.warning(f"⚠️  Could not log upload: {e}")
+        
+        # --- Cleanup unique-ified video files ---
         for uf in unique_files:
             if os.path.exists(uf):
                 try:
                     os.remove(uf)
-                    log.info(f"🗑️  Removed temporary unique-ified file: {uf}")
+                    log.debug(f"🗑️  Removed temporary file: {uf}")
                 except Exception as e:
                     log.warning(f"⚠️  Could not cleanup temporary file {uf}: {e}")
-
+        
+        # --- Queue management based on results ---
         if ok == total and total > 0:
-            # All enabled platforms succeeded - remove from queue AND delete files
-            log.info("✅ All platforms succeeded - removing from queue and deleting files")
+            log.info(f"✅ All {total} platforms succeeded — removing from queue and deleting files")
             mark_done(clip, delete_files=True)
         elif ok > 0:
-            # Partial success - remove from queue but KEEP files for manual review/retry
-            log.warning(f"⚠️  Only {ok}/{total} platforms succeeded - removing from queue but keeping files")
+            log.warning(f"⚠️  Partial success ({ok}/{total}) — removing from queue but keeping files for review")
             mark_done(clip, delete_files=False)
         else:
-            # Total failure - keep everything for automatic retry
-            log.error("❌ All enabled platforms failed - keeping entry and file for retry next slot")
+            log.error(f"❌ All platforms failed — keeping entry and file for retry next slot")
 
     post_job.__name__ = f"post_{slot_time.replace(':', '')}"
     return post_job
 
 
 def run_test_post(filename: str, platform: str | None = None):
+    """Run a single test upload for manual validation."""
     now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
-    log.info("=" * 60)
-    log.info("🧪 TEST MODE — single file post")
-    log.info(f"🕒 Triggered at: {now}")
-    log.info(f"🎯 Filename    : {filename}")
+    log.info("=" * 70)
+    log.info("🧪 TEST MODE — single-file upload")
+    log.info(f"     Triggered: {now}")
+    log.info(f"     Filename : {filename}")
     if platform:
-        log.info(f"🎯 Platform    : {platform}")
-    log.info("=" * 60)
+        log.info(f"     Platform : {platform.upper()}")
+    log.info("=" * 70)
 
     clip, video_path = get_clip_by_filename(filename)
     if clip is None:
+        log.error(f"❌ Clip not found: {filename}")
         return
 
     results = {}
     # If platform is specified, only post to that platform
     if platform:
-        if platform.lower() == "tiktok" and ENABLE_TIKTOK:
+        platform_lower = platform.lower()
+        if platform_lower == "tiktok" and ENABLE_TIKTOK:
+            log.info(f"📱 Testing TikTok upload for: {clip.get('title', '?')}")
             results["tiktok"] = upload_tiktok(video_path, clip)
-        elif platform.lower() == "instagram" and ENABLE_INSTAGRAM:
+        elif platform_lower == "instagram" and ENABLE_INSTAGRAM:
+            log.info(f"📷 Testing Instagram upload for: {clip.get('title', '?')}")
             results["instagram"] = upload_instagram(video_path, clip)
-        elif platform.lower() == "youtube" and ENABLE_YOUTUBE:
+        elif platform_lower == "youtube" and ENABLE_YOUTUBE:
+            log.info(f"📺 Testing YouTube upload for: {clip.get('title', '?')}")
             results["youtube"] = upload_youtube(video_path, clip)
         else:
-            log.error(f"Platform '{platform}' not enabled or not recognized")
+            log.error(f"❌ Platform '{platform}' not recognized or not enabled")
             return
     else:
-        # If no platform specified, post to all enabled platforms
+        # If no platform specified, test all enabled platforms
+        log.info(f"📹 Testing all enabled platforms for: {clip.get('title', '?')}")
         if ENABLE_TIKTOK:
+            _human_pause(1, 2)
             results["tiktok"] = upload_tiktok(video_path, clip)
         if ENABLE_INSTAGRAM:
+            _inter_platform_delay() if results else None
             results["instagram"] = upload_instagram(video_path, clip)
         if ENABLE_YOUTUBE:
+            _inter_platform_delay() if results else None
             results["youtube"] = upload_youtube(video_path, clip)
 
     ok = sum(results.values())
-    log.info(f"📊 Test result: {ok}/{len(results)} platforms succeeded — {results}")
+    log.info("=" * 70)
+    log.info(f"📊 Test result: {ok}/{len(results)} platforms succeeded")
+    for platform_name, success in results.items():
+        status = "✅" if success else "❌"
+        log.info(f"     {status} {platform_name.upper()}")
+    log.info("=" * 70)
     
     # Log the test upload
-    log_upload(clip, video_path, results)
+    try:
+        log_upload(clip, video_path, results)
+    except Exception as e:
+        log.warning(f"⚠️  Could not log test upload: {e}")
 
     if ok > 0:
-        posted_at = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
-        log.info(f"✅ Test post completed at {posted_at}")
-        log.warning("🧪 TEST MODE: clips.json entry and source file were NOT deleted.")
-        log.warning(f"🧹 Please delete manually if needed: {video_path}")
+        log.info(f"🧪 TEST MODE: clips.json entry and source file were NOT deleted (manual cleanup required)")
+        log.info(f"   Source: {video_path}")
     else:
-        log.error("❌ Test post failed on all enabled platforms.")
+        log.error(f"❌ All platforms failed — check configuration and credentials")
 
 
 # ═══════════════════════════════════════════════════════════

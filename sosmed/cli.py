@@ -220,6 +220,27 @@ def main() -> None:
                 })
         
         # ── Post-process ────────────────────────────────────────────────
+        # Prepare subtitles: translate words to Indonesian for each clip
+        if args.subtitles and segments:
+            log("INFO", "Translating subtitle words to Indonesian for all clips...")
+            from .subtitles import get_clip_words
+            from .llm import translate_subtitle_words
+            for clip in clips:
+                try:
+                    raw_words = get_clip_words(
+                        segments,
+                        clip_start=clip["start"],
+                        clip_end=clip["end"],
+                    )
+                    clip["_subtitle_words"] = translate_subtitle_words(
+                        raw_words,
+                        llm_model=args.llm_model,
+                        api_key=args.api_key,
+                    )
+                except Exception as e:
+                    log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
+                    clip["_subtitle_words"] = []
+        
         any_postprocess = args.subtitles
         if any_postprocess and raw_outputs:
             outputs = postprocess_clips(
@@ -330,6 +351,7 @@ def main() -> None:
     # Check if clips.json already exists (cached from previous run)
     output_dir.mkdir(parents=True, exist_ok=True)
     clips_cache_file = output_dir / "clips.json"
+    clips_from_cache = False
     
     if clips_cache_file.exists():
         log("INFO", f"Loading cached clips from {clips_cache_file}")
@@ -338,7 +360,8 @@ def main() -> None:
         if _ensure_filenames(clips):
             clips_cache_file.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
             log("OK", f"Patched filenames in cache → {clips_cache_file}")
-        log("OK", f"Loaded {len(clips)} clips from cache (skipped LLM)")
+        log("OK", f"Loaded {len(clips)} clips from cache (skipped LLM, tighten, improve)")
+        clips_from_cache = True
     else:
         # LLM analysis
         video_dur = _get_video_duration(str(video))
@@ -361,30 +384,32 @@ def main() -> None:
         log("WARN", "No engaging clips found. Exiting.")
         sys.exit(0)
 
-    # Tighten clip boundaries to actual speech (remove gaps, filler, silence)
-    original_durations = [c["end"] - c["start"] for c in clips]
-    clips = tighten_clip_boundaries(
-        clips, segments,
-        padding=0.15,
-        max_gap=2.0,  # Remove silence gaps > 2 seconds
-        min_speech_density=0.5,  # Words per second threshold for "dense" speech
-    )
-    new_durations = [c["end"] - c["start"] for c in clips]
-    time_saved = sum(original_durations) - sum(new_durations)
-    if time_saved > 1:
-        log("OK", f"Removed {time_saved:.1f}s of gaps/filler (avg {time_saved/len(clips):.1f}s per clip)")
-    else:
-        log("OK", "Clip boundaries optimized")
+    # Skip tighten + improve if clips loaded from cache (already processed)
+    if not clips_from_cache:
+        # Tighten clip boundaries to actual speech (remove gaps, filler, silence)
+        original_durations = [c["end"] - c["start"] for c in clips]
+        clips = tighten_clip_boundaries(
+            clips, segments,
+            padding=0.15,
+            max_gap=2.0,  # Remove silence gaps > 2 seconds
+            min_speech_density=0.5,  # Words per second threshold for "dense" speech
+        )
+        new_durations = [c["end"] - c["start"] for c in clips]
+        time_saved = sum(original_durations) - sum(new_durations)
+        if time_saved > 1:
+            log("OK", f"Removed {time_saved:.1f}s of gaps/filler (avg {time_saved/len(clips):.1f}s per clip)")
+        else:
+            log("OK", "Clip boundaries optimized")
 
-    # ── 3b. Improve and fix clips ──────────────────────────────────────
-    log("INFO", "Improving clips: translate to Indonesian, fix captions, deduplicate topics...")
-    clips = fix_and_improve_clips(
-        clips,
-        llm_model=args.llm_model,
-        api_key=args.api_key,
-        detected_language=detected_language,
-    )
-    log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
+        # ── 3b. Improve and fix clips ──────────────────────────────────────
+        log("INFO", "Improving clips: translate to Indonesian, fix captions, deduplicate topics...")
+        clips = fix_and_improve_clips(
+            clips,
+            llm_model=args.llm_model,
+            api_key=args.api_key,
+            detected_language=detected_language,
+        )
+        log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
     # 💾 Save metadata early (~as soon as we have final clip information)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -426,7 +451,28 @@ def main() -> None:
         max_workers=args.workers,
     )
 
-    # ── 5. Post-process (subtitles only) ────────────────────────────────
+    # ── 5. Prepare subtitles: translate words to Indonesian for each clip
+    if args.subtitles and segments:
+        log("INFO", "Translating subtitle words to Indonesian for all clips...")
+        from .subtitles import get_clip_words
+        from .llm import translate_subtitle_words
+        for clip in clips:
+            try:
+                raw_words = get_clip_words(
+                    segments,
+                    clip_start=clip["start"],
+                    clip_end=clip["end"],
+                )
+                clip["_subtitle_words"] = translate_subtitle_words(
+                    raw_words,
+                    llm_model=args.llm_model,
+                    api_key=args.api_key,
+                )
+            except Exception as e:
+                log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
+                clip["_subtitle_words"] = []
+
+    # ── 6. Post-process (subtitles only) ────────────────────────────────
     any_postprocess = args.subtitles
     if any_postprocess and raw_outputs:
         outputs = postprocess_clips(

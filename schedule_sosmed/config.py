@@ -14,6 +14,7 @@ SCHEDULE_TIMES = ["06:00", "10:00", "14:00", "18:00", "20:00", "23:00"]
 
 # ── Instagram ────────────────────────────────────────────────
 INSTAGRAM_SESSION_FILE = os.path.join(BASE_DIR, "ig_session.json")
+INSTAGRAM_CREDENTIAL_FILE = os.path.join(BASE_DIR, "ig_credentials.json")  # {"username": "your_ig_username", "password": "your_ig_password"}
 
 # ── YouTube ──────────────────────────────────────────────────
 YOUTUBE_CLIENT_SECRETS = os.path.join(BASE_DIR, "client_secrets.json")  # downloaded from Google Cloud

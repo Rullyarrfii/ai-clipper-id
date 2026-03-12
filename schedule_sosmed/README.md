@@ -49,9 +49,22 @@ Open `config.py` and set:
 
 #### Instagram
 ```bash
-python auth_test_instagram.py
+python scheduler.py --test-file clips/your_clip.mp4 --platform instagram
 ```
-Logs in and saves a session file. Re-run if you get login errors.
+Uses the saved token in `ig_session.json` and attempts an Instagram upload.
+
+If Meta returns `OAuthException` with `code=200`, that is usually an app permission problem, not just an expired token. Check the token scopes directly:
+
+```bash
+curl "https://graph.facebook.com/v25.0/me/permissions?access_token=YOUR_TOKEN"
+```
+
+Required granted scopes:
+- `instagram_content_publish`
+- `pages_read_engagement`
+- `pages_show_list`
+
+If any of those are missing or declined, generate a new long-lived token, verify the Meta app is in Live mode, and confirm the Instagram professional account is still connected to the expected Facebook Page.
 
 #### YouTube
 ```bash

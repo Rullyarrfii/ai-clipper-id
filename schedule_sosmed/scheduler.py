@@ -62,10 +62,10 @@ from config import (
 #   • Meta Business Blog: 3–5 Reels/day for short-form clip accounts
 #   • YouTube Creator Insider: 2–4 Shorts/day to avoid cannibalisation
 #
-# Weights → [3,4,5,6] = [15%, 35%, 35%, 15%]
+# Weights → [3,4,5] = [15%, 35%, 35%]
 # Peak at 4–5: highest algorithmic reach without triggering spam filters.
-_DAILY_UPLOAD_POOL   = [3, 4, 5, 6]
-_DAILY_UPLOAD_WEIGHTS = [3, 7, 7, 3]
+_DAILY_UPLOAD_POOL   = [3, 4, 5]
+_DAILY_UPLOAD_WEIGHTS = [3, 7, 5]
 
 # Drawn fresh every midnight; shared across all platforms since one slot
 # = one cross-platform post.

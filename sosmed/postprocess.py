@@ -130,7 +130,7 @@ def _postprocess_one(
     # ── 1. Generate subtitles ────────────────────────────────────────────────
     ass_path = None
     if subtitles:
-        words = clip["_subtitle_words"]
+        words = clip.get("_subtitle_words") or []
         if words:
             ass_content = generate_ass_subtitles(
                 words,

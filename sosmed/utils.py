@@ -249,6 +249,91 @@ _ID_FILLERS = (
     r"like|you know|i mean|so|right|okay|basically|literally|actually|anyway|alright"
 )
 
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━ INTERNAL FIELDS CACHE ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def get_clips_cache_dir(output_dir):
+    """Get cache directory for storing internal clip fields."""
+    from pathlib import Path
+    output = Path(output_dir)
+    cache_dir = output.parent / ".cache" / output.name
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def strip_internal_fields(clips):
+    """Return a copy of clips with all _ -prefixed fields removed."""
+    cleaned = []
+    for clip in clips:
+        clean_clip = {k: v for k, v in clip.items() if not k.startswith("_")}
+        cleaned.append(clean_clip)
+    return cleaned
+
+
+def get_internal_fields(clips):
+    """Extract only internal (underscore-prefixed) fields from clips, keyed by filename."""
+    internal_by_filename = {}
+    for clip in clips:
+        filename = clip.get("filename")
+        if filename:
+            internal = {k: v for k, v in clip.items() if k.startswith("_")}
+            if internal:
+                internal_by_filename[filename] = internal
+    return internal_by_filename
+
+
+def save_clips_to_disk(clips, output_dir):
+    """Save clips cleanly: public fields to clips.json, internal fields to .cache."""
+    import json
+    from pathlib import Path
+    
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    
+    # Strip and save public version
+    public_clips = strip_internal_fields(clips)
+    clips_json = output / "clips.json"
+    clips_json.write_text(json.dumps(public_clips, indent=2, ensure_ascii=False))
+    
+    # Save internal fields to cache
+    internal_fields = get_internal_fields(clips)
+    if internal_fields:
+        cache_dir = get_clips_cache_dir(output)
+        cache_file = cache_dir / "clips_internal.json"
+        cache_file.write_text(json.dumps(internal_fields, indent=2, ensure_ascii=False))
+    
+    return clips_json
+
+
+def load_clips_with_internal_fields(output_dir):
+    """Load clips.json and merge in internal fields from cache."""
+    import json
+    from pathlib import Path
+    
+    output = Path(output_dir)
+    clips_json = output / "clips.json"
+    
+    if not clips_json.exists():
+        return []
+    
+    clips = json.loads(clips_json.read_text())
+    
+    # Try to load internal fields from cache
+    cache_dir = get_clips_cache_dir(output)
+    cache_file = cache_dir / "clips_internal.json"
+    
+    if cache_file.exists():
+        try:
+            internal_fields = json.loads(cache_file.read_text())
+            for clip in clips:
+                filename = clip.get("filename")
+                if filename and filename in internal_fields:
+                    clip.update(internal_fields[filename])
+        except Exception as e:
+            log("WARN", f"Could not load internal fields from cache: {e}")
+    
+    return clips
+
 FILLER_RE = re.compile(rf"^({_ID_FILLERS})\W*$", re.IGNORECASE)
 
 SYSTEM_PROMPT = """\
@@ -327,28 +412,35 @@ DEDUPLICATE: If two clips cover the exact same moment or insight, keep only the 
 
 ---
 
-STEP 5 — REWRITE THESE FIELDS FOR EVERY INCLUDED CLIP
+STEP 5 — GENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
 
-hook
+For each clip, reason through the fields in this order before writing any JSON:
+
+(1) topic
+- One sentence: the core insight or emotional moment, not just the subject category
+- Think: What is actually happening or being revealed in this clip?
+
+(2) reason
+- Name the specific viral signal(s) driving this clip (hook / shareability / entertainment / retention / clarity)
+- Explain in 1–2 sentences why that signal applies to this specific clip
+- Think: What makes this clip work? Which scoring dimensions drove its acceptance?
+
+(3) hook
 - Use the single most provocative or emotionally charged line in the clip
 - If the original hook is weak, escalate it — use the clip's best internal line as the hook
 - Do NOT start with "In this clip..." or any description
+- Think: Based on the topic and reason above, what 1–2 words will stop scrolling?
 
-title
-- Max 8 words
-- Must create a curiosity gap — the viewer should want to know the answer
-
-caption
+(4) caption
 - Write like a native creator posting their own content
 - Must accurately reflect what actually happens in the clip
 - Include relevant hashtags at the end
+- Think: How would someone naturally describe this clip if sharing it?
 
-topic
-- One sentence: the core insight or emotional moment, not just the subject category
-
-reason
-- Name the specific viral signal(s) driving this clip (hook / shareability / entertainment / retention / clarity)
-- Explain in 1–2 sentences why that signal applies to this specific clip
+(5) title
+- Max 8 words
+- Must create a curiosity gap — the viewer should want to know the answer
+- Think: Based on the hook, topic, and reason, what question or claim makes sense?
 
 ---
 
@@ -356,7 +448,7 @@ STEP 6 — OUTPUT FORMAT
 
 Return a JSON array:
 - All original fields preserved
-- Rewritten fields replace original values entirely
+- Rewritten fields replace original values entirely (topic, reason, hook, caption, title generated in that order)
 - Sorted by clip_score descending
 - No new fields added, no fields removed
 """

@@ -16,7 +16,8 @@ from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
 from .utils import (
     log, BOLD, RESET, CYAN, GREEN, YELLOW,
-    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries
+    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries,
+    save_clips_to_disk, load_clips_with_internal_fields
 )
 
 
@@ -255,9 +256,7 @@ def main() -> None:
             outputs = raw_outputs
         
         # Save metadata (preserve all_clips in file, only processed clips subset)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        meta = output_dir / "clips.json"
-        meta.write_text(json.dumps(all_clips, indent=2, ensure_ascii=False))
+        meta = save_clips_to_disk(all_clips, output_dir)
         
         elapsed_total = time.time() - t_total
         print(f"\n{GREEN}{BOLD}✓ Done!{RESET} "
@@ -412,9 +411,7 @@ def main() -> None:
         log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
     # 💾 Save metadata early (~as soon as we have final clip information)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    meta = output_dir / "clips.json"
-    meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+    meta = save_clips_to_disk(clips, output_dir)
     log("OK", f"Metadata saved early → {meta}")
 
     # Summary table
@@ -487,9 +484,7 @@ def main() -> None:
         outputs = raw_outputs
 
     # Save final metadata (includes filenames set by extraction/postprocess)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    meta = output_dir / "clips.json"
-    meta.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+    meta = save_clips_to_disk(clips, output_dir)
 
     elapsed_total = time.time() - t_total
     print(f"\n{GREEN}{BOLD}✓ Done!{RESET} "

@@ -84,28 +84,35 @@ DEDUPLICATE: If two clips cover the exact same moment or insight, keep only the 
 
 ---
 
-STEP 5 — REWRITE THESE FIELDS FOR EVERY INCLUDED CLIP
+STEP 5 — GENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
 
-hook
+For each clip, reason through the fields in this order before writing any JSON:
+
+(1) topic
+- One sentence: the core insight or emotional moment, not just the subject category
+- Think: What is actually happening or being revealed in this clip?
+
+(2) reason
+- Name the specific viral signal(s) driving this clip (hook / shareability / entertainment / retention / clarity)
+- Explain in 1–2 sentences why that signal applies to this specific clip
+- Think: What makes this clip work? Which scoring dimensions drove its acceptance?
+
+(3) hook
 - Use the single most provocative or emotionally charged line in the clip
 - If the original hook is weak, escalate it — use the clip's best internal line as the hook
 - Do NOT start with "In this clip..." or any description
+- Think: Based on the topic and reason above, what 1–2 words will stop scrolling?
 
-title
-- Max 8 words
-- Must create a curiosity gap — the viewer should want to know the answer
-
-caption
+(4) caption
 - Write like a native creator posting their own content
 - Must accurately reflect what actually happens in the clip
 - Include relevant hashtags at the end
+- Think: How would someone naturally describe this clip if sharing it?
 
-topic
-- One sentence: the core insight or emotional moment, not just the subject category
-
-reason
-- Name the specific viral signal(s) driving this clip (hook / shareability / entertainment / retention / clarity)
-- Explain in 1–2 sentences why that signal applies to this specific clip
+(5) title
+- Max 8 words
+- Must create a curiosity gap — the viewer should want to know the answer
+- Think: Based on the hook, topic, and reason, what question or claim makes sense?
 
 ---
 
@@ -113,7 +120,7 @@ STEP 6 — OUTPUT FORMAT
 
 Return a JSON array:
 - All original fields preserved
-- Rewritten fields replace original values entirely
+- Rewritten fields replace original values entirely (topic, reason, hook, caption, title generated in that order)
 - Sorted by clip_score descending
 - No new fields added, no fields removed
 ```

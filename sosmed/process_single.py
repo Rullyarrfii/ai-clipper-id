@@ -17,7 +17,8 @@ from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
 from .utils import (
     log, BOLD, RESET, CYAN, GREEN, YELLOW,
-    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries
+    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries,
+    strip_internal_fields, get_internal_fields, get_clips_cache_dir
 )
 
 
@@ -175,7 +176,7 @@ def process_single_video(
             raw_words,
             llm_model=llm_model,
             api_key=api_key,
-        )
+        )|
         log("OK", f"Subtitle translation complete: {len(best_clip['_subtitle_words'])} words")
 
     # ── 4. Extract best clip ─────────────────────────────────────────────────
@@ -217,14 +218,24 @@ def process_single_video(
         print(f"{BOLD}Title:{RESET} {best_clip.get('title', 'N/A')}")
         print(f"{BOLD}Caption:{RESET} {best_clip.get('caption', 'N/A')}")
         
-        # Save clip JSON
+        # Save clip JSONs (public to disk, internal to .cache)
+        # Best clip
+        best_clip_public = strip_internal_fields([best_clip])[0]
         best_clip_path = output_path / "best_clip.json"
-        best_clip_path.write_text(json.dumps(best_clip, indent=2, ensure_ascii=False))
+        best_clip_path.write_text(json.dumps(best_clip_public, indent=2, ensure_ascii=False))
         log("OK", f"Saved best clip → {best_clip_path}")
         
+        # Save internal fields to cache
+        internal = get_internal_fields([best_clip])
+        if internal:
+            cache_dir = get_clips_cache_dir(output_path)
+            cache_file = cache_dir / "clips_internal.json"
+            cache_file.write_text(json.dumps(internal, indent=2, ensure_ascii=False))
+        
         # Save all clips for reference
+        all_clips_public = strip_internal_fields(clips)
         all_clips_path = output_path / "all_clips.json"
-        all_clips_path.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
+        all_clips_path.write_text(json.dumps(all_clips_public, indent=2, ensure_ascii=False))
         log("OK", f"Saved all {len(clips)} clips → {all_clips_path}")
         
         return {

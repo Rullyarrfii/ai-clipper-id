@@ -72,10 +72,8 @@ def _build_user_prompt(
 ) -> str:
     """Build the user prompt for LLM."""
     header = (
-        f"Analisis transkrip ini dan EKSTRAK SEBANYAK MUNGKIN momen BERPOTENSI VIRAL.\n"
-        f"Fokus: hook kuat di awal, bikin nonton sampai habis, bikin share/comment.\n"
-        f"Setiap subtopik yang layak harus jadi klip terpisah.\n"
-        f"Durasi: {min_dur}-{max_dur}s. Maks {max_clips} klip. clip_score >= {min_score}.\n"
+        f"Analyze this transcript and extract every clip with a realistic shot at high views.\n"
+        f"Duration: {min_dur}–{max_dur}s. Max {max_clips} clips. clip_score ≥ {min_score}.\n"
     )
     if chunk_info:
         header += f"{chunk_info}\n"
@@ -85,13 +83,8 @@ def _build_user_prompt(
 def _compute_clip_score(c: dict[str, Any]) -> int:
     """Compute clip_score as weighted average tuned for TikTok virality.
 
-    Formula (weights reflect TikTok algorithm priorities):
-      hook*0.25 + retention*0.25 + shareability*0.20 + entertainment*0.20 + clarity*0.10
-
-    Hook + Retention = 50% because TikTok's algorithm heavily rewards
-    watch-through rate (determined by hook strength and content retention).
-    Shareability + Entertainment = 40% for engagement signals.
-    Clarity = 10% baseline for standalone comprehension.
+    Formula:
+      hook*0.30 + shareability*0.25 + entertainment*0.25 + retention*0.15 + clarity*0.05
     """
     hook = int(c.get("score_hook", 0) or 0)
     retention = int(c.get("score_retention", 0) or 0)
@@ -110,11 +103,11 @@ def _compute_clip_score(c: dict[str, Any]) -> int:
     total = hook + retention + shareability + entertainment + clarity
     if total > 0:
         return round(
-            hook * 0.25
-            + retention * 0.25
-            + shareability * 0.20
-            + entertainment * 0.20
-            + clarity * 0.10
+            hook * 0.30
+            + shareability * 0.25
+            + entertainment * 0.25
+            + retention * 0.15
+            + clarity * 0.05
         )
     return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
 

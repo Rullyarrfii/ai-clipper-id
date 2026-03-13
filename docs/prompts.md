@@ -19,8 +19,8 @@ Everything else moves to Step 2.
 
 ---
 
-STEP 2 — SCORE EACH CLIP
-Assign a number 0–100 for each dimension using the anchors below.
+STEP 2 — RESCORE EACH CLIP
+Reassign a number 0–100 for each dimension using the anchors below.
 
 score_hook — Stop-scroll power in the first 2 seconds
 90–100 | Shocking statement, direct provocation, strong contradiction, instantly recognizable meme/brand reference
@@ -59,7 +59,7 @@ score_clarity — Does it work without watching the full stream?
 
 ---
 
-STEP 3 — CALCULATE clip_score
+STEP 3 — RECALCULATE clip_score
 Use this exact formula:
 
 clip_score = (score_hook × 0.30) + (score_shareability × 0.25) + (score_entertainment × 0.25) + (score_retention × 0.15) + (score_clarity × 0.05)
@@ -72,7 +72,7 @@ hook=85, shareability=70, entertainment=90, retention=60, clarity=40
 
 ---
 
-STEP 4 — APPLY SELECTION RULES
+STEP 4 — REAPPLY SELECTION RULES
 
 INCLUDE the clip only if BOTH are true:
 - clip_score ≥ 82
@@ -84,7 +84,7 @@ DEDUPLICATE: If two clips cover the exact same moment or insight, keep only the 
 
 ---
 
-STEP 5 — GENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
+STEP 5 — REGENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
 
 For each clip, reason through the fields in this order before writing any JSON:
 
@@ -118,7 +118,7 @@ For each clip, reason through the fields in this order before writing any JSON:
 
 STEP 6 — OUTPUT FORMAT
 
-Return a JSON array:
+Must only return a JSON array:
 - All original fields preserved
 - Rewritten fields replace original values entirely (topic, reason, hook, caption, title generated in that order)
 - Sorted by clip_score descending

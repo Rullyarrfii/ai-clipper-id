@@ -167,7 +167,7 @@ def generate_ass_subtitles(
     alignment_map = {"lower": 2, "center": 5, "upper": 8}
     alignment = alignment_map.get(position, 2)
     margin_v = round(play_res_y * margin_pct.get(position, 5.0) / 100.0)
-    margin_h = round(play_res_x * 4.0 / 100.0)   # 4% horizontal padding
+    margin_h = round(play_res_x * 10.0 / 100.0)   # 10% horizontal padding (TikTok UI clearance)
 
     # ── ASS header ───────────────────────────────────────────────────────
     header = (

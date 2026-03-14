@@ -10,6 +10,40 @@ from .backends import call_llm
 from .prompts import get_prompt
 
 
+def generate_single_clip_metadata(
+    clip: dict[str, Any],
+    segments: list[dict[str, Any]],
+    llm_model: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Generate title/topic/caption/reason/hook for a full-video clip from transcript."""
+    transcript = _build_transcript_for_metadata(segments)
+    if not transcript:
+        raise RuntimeError("Cannot generate single clip metadata without transcript text")
+
+    prompt_text = _read_prompt("Generate Single Clip Metadata")
+    clip_json = json.dumps([clip], ensure_ascii=False, indent=2)
+    user_message = f"{prompt_text}\n\nTranscript:\n{transcript}\n\nClip:\n{clip_json}"
+    system_message = (
+        "You are an expert short-form video strategist. "
+        "Generate accurate, compelling metadata from the transcript and return only valid JSON."
+    )
+
+    result = call_llm(system_message, user_message, api_key, llm_model)
+    if not result or not isinstance(result, list) or not isinstance(result[0], dict):
+        raise RuntimeError(f"Single clip metadata generation failed: {result!r}")
+
+    generated = result[0]
+    updated = clip.copy()
+    for field in ["title", "topic", "caption", "reason", "hook"]:
+        value = str(generated.get(field, "") or "").strip()
+        if not value:
+            raise RuntimeError(f"Single clip metadata missing required field: {field}")
+        updated[field] = value
+
+    return updated
+
+
 def fix_and_improve_clips(
     clips: list[dict[str, Any]],
     llm_model: str | None = None,
@@ -324,3 +358,16 @@ def _read_prompt(section_name: str) -> str:
     if not prompt:
         log("ERROR", f"Prompt section '{section_name}' not found in prompts.py")
     return prompt
+
+
+def _build_transcript_for_metadata(segments: list[dict[str, Any]]) -> str:
+    """Serialize transcript segments compactly for metadata generation."""
+    lines: list[str] = []
+    for segment in segments:
+        text = str(segment.get("text", "") or "").strip()
+        if not text:
+            continue
+        start = float(segment.get("start", 0.0) or 0.0)
+        end = float(segment.get("end", 0.0) or 0.0)
+        lines.append(f"[{start:.0f}-{end:.0f}] {text}")
+    return "\n".join(lines)

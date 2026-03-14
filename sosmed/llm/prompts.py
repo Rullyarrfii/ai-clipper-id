@@ -3,6 +3,28 @@ LLM prompts for clip processing: translation, caption fixing, and deduplication.
 """
 
 PROMPTS = {
+    "Generate Single Clip Metadata": """Given a transcript and a single clip JSON object that covers the full video, rewrite only the metadata fields so they accurately reflect the spoken content.
+
+Tasks:
+1. Read the transcript carefully and identify the central claim, tension, or insight.
+2. Rewrite these fields only: title, topic, caption, reason, hook.
+3. Keep all timing, score, rank, and filename fields unchanged.
+4. Return the same JSON array with exactly one item.
+
+Field requirements:
+- title: max 8 words, curiosity-driven, specific to the transcript
+- topic: one clear sentence describing the core idea or debate
+- caption: natural creator-style caption, accurate to the transcript, include relevant hashtags
+- reason: 1-2 sentences explaining why this full-video clip is compelling or worth watching
+- hook: the strongest opening line or a tightened version that stays faithful to the transcript
+
+Language rules:
+- If the transcript is in Indonesian, write title, topic, caption, reason, and hook in Indonesian.
+- Do not use the filename or generic placeholders as metadata.
+- Do not invent facts not supported by the transcript.
+
+Return ONLY valid JSON array, no other text.""",
+
     "Translate to Indonesian": """Given clips data in JSON format, perform the following:
 
 1. For each clip, analyze the language of the fields: topic, caption, hook

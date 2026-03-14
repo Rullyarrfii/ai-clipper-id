@@ -6,18 +6,18 @@ Usage: python sosmed/process_single.py path/to/video.mp4 [options]
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 from .transcription import transcribe
 from .prefilter import prefilter_segments
-from .llm import find_clips, fix_and_improve_clips, translate_subtitle_words
+from .llm import generate_single_clip_metadata, translate_subtitle_words
 from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
 from .utils import (
-    log, BOLD, RESET, CYAN, GREEN, YELLOW,
-    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries,
+    log, BOLD, RESET, CYAN, GREEN,
     strip_internal_fields, get_internal_fields, get_clips_cache_dir
 )
 
@@ -29,6 +29,46 @@ def _get_transcript_cache_path(video_path: str) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{video.stem}_transcript.json"
     return cache_file
+
+
+def _build_full_video_clip(
+    video: Path,
+    video_duration: float,
+    segments: list[dict],
+) -> dict:
+    """Build a single clip that covers the entire video."""
+    clip_start = 0.0
+    if segments:
+        clip_start = max(0.0, min(float(segments[0].get("start", 0.0)), video_duration))
+
+    title = re.sub(r"[_-]+", " ", video.stem).strip() or video.stem
+
+    return {
+        "rank": 1,
+        "start": clip_start,
+        "end": video_duration,
+        "title": title,
+        "topic": title,
+        "caption": title,
+        "reason": "Single-video mode returns the full source video.",
+        "hook": "",
+        "score_hook": 0,
+        "score_retention": 0,
+        "score_shareability": 0,
+        "score_entertainment": 0,
+        "score_clarity": 0,
+        "clip_score": 0,
+    }
+
+
+def _should_translate_to_indonesian(detected_language: dict | None) -> bool:
+    """Return True when subtitle translation to Indonesian is still needed."""
+    if not detected_language:
+        return True
+
+    lang = str(detected_language.get("language", "")).lower()
+    prob = float(detected_language.get("language_probability", 0.0) or 0.0)
+    return not (lang == "id" and prob > 0.6)
 
 
 def process_single_video(
@@ -113,52 +153,29 @@ def process_single_video(
         log("ERROR", "All segments filtered out. Try a different whisper model or looser filters.")
         sys.exit(1)
 
-    # ── 3. LLM analysis ─────────────────────────────────────────────────────
+    # ── 3. Full-video single clip ───────────────────────────────────────────
     output_path.mkdir(parents=True, exist_ok=True)
     video_dur = _get_video_duration(str(video))
-    
-    clips = find_clips(
+    if not video_dur or video_dur <= 0:
+        video_dur = float(segments[-1]["end"])
+
+    clips = [_build_full_video_clip(video, video_dur, segments)]
+    log("INFO", "Single-video mode skips LLM chunking and uses the entire video as one clip")
+    log("INFO", "Generating title, topic, caption, reason, and hook from transcript...")
+    clips[0] = generate_single_clip_metadata(
+        clips[0],
         filtered,
-        min_duration=15,
-        max_duration=60,
-        max_clips=min(10, MAX_CLIPS_HARD_LIMIT),
-        min_score=40,
         llm_model=llm_model,
         api_key=api_key,
-        video_duration=video_dur,
-        chunk_duration=chunk_duration,
-        chunk_overlap=chunk_overlap,
     )
-
-    if not clips:
-        log("WARN", "No engaging clips found. Exiting.")
-        sys.exit(1)
-
-    # Tighten clip boundaries
-    clips = tighten_clip_boundaries(
-        clips, segments,
-        padding=0.15,
-        max_gap=2.0,
-        min_speech_density=0.5,
-    )
-
-    # ── 3b. Improve and fix clips ──────────────────────────────────────
-    log("INFO", "Improving clips: translate to Indonesian, fix captions, deduplicate topics...")
-    clips = fix_and_improve_clips(
-        clips,
-        llm_model=llm_model,
-        api_key=api_key,
-        detected_language=detected_language,
-    )
-    log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
     # Select best clip (rank 1)
     best_clip = clips[0] if clips else None
     if not best_clip:
-        log("ERROR", "No clips available after improvement")
+        log("ERROR", "No clip available for single-video processing")
         sys.exit(1)
 
-    log("OK", f"Selected best clip: rank {best_clip['rank']} (score: {best_clip.get('clip_score', '?')})")
+    log("OK", f"Selected full video clip: rank {best_clip['rank']} (score: {best_clip.get('clip_score', '?')})")
     log("OK", f"  Start: {best_clip['start']:.1f}s, End: {best_clip['end']:.1f}s")
     log("OK", f"  Topic: {best_clip.get('topic', 'N/A')}")
     log("OK", f"  Title: {best_clip.get('title', 'N/A')}")
@@ -166,18 +183,22 @@ def process_single_video(
     # ── 3c. Translate subtitle words to Indonesian ───────────────────────────
     if subtitles:
         from .subtitles import get_clip_words
-        log("INFO", "Translating subtitle words to Indonesian...")
         raw_words = get_clip_words(
             segments,
             clip_start=best_clip["start"],
             clip_end=best_clip["end"],
         )
-        best_clip["_subtitle_words"] = translate_subtitle_words(
-            raw_words,
-            llm_model=llm_model,
-            api_key=api_key,
-        )|
-        log("OK", f"Subtitle translation complete: {len(best_clip['_subtitle_words'])} words")
+        if _should_translate_to_indonesian(detected_language):
+            log("INFO", "Translating subtitle words to Indonesian...")
+            best_clip["_subtitle_words"] = translate_subtitle_words(
+                raw_words,
+                llm_model=llm_model,
+                api_key=api_key,
+            )
+            log("OK", f"Subtitle translation complete: {len(best_clip['_subtitle_words'])} words")
+        else:
+            best_clip["_subtitle_words"] = raw_words
+            log("INFO", "Skipping subtitle translation because Whisper detected Indonesian")
 
     # ── 4. Extract best clip ─────────────────────────────────────────────────
     log("INFO", "Extracting best clip...")

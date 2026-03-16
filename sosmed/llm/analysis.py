@@ -139,7 +139,7 @@ def _validate_clips(
     min_score: int,
     video_duration: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Sanitize, deduplicate, and cap the clip list — lenient quality gate."""
+    """Sanitize, deduplicate, and cap the clip list — strict quality gate for viral hits only."""
     valid: list[dict[str, Any]] = []
     seen_ranges: list[tuple[float, float]] = []
 
@@ -162,22 +162,26 @@ def _validate_clips(
     for c in scored_clips:
         s, e = float(c["start"]), float(c["end"])
         dur = e - s
-        if dur < min_dur * 0.3 or dur > max_dur * 2.0:
-            continue  # lenient duration tolerance
+        if dur < min_dur or dur > max_dur:
+            continue  # strict duration enforcement — no tolerance
         if video_duration and e > video_duration + 2:
             continue
         score = c["_score"]
-        if score < min_score * 0.5:
-            continue  # lenient score threshold
+        if score < min_score:
+            continue  # strict score threshold — no leniency
+        # Strong hook requirement (first viral signal)
+        hook_score = int(c.get("score_hook", 0) or 0)
+        if hook_score < 75:
+            continue  # hooks under 75 don't stop scrolls reliably
         # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))
             shorter = min(e1 - s1, e2 - s2)
             return overlap / shorter if shorter > 0 else 0
 
-        overlaps = any(_overlap_ratio(s, e, rs, re) > 0.7 for rs, re in seen_ranges)
+        overlaps = any(_overlap_ratio(s, e, rs, re) > 0.5 for rs, re in seen_ranges)
         if overlaps:
-            continue
+            continue  # stricter overlap detection — no near-duplicates
         seen_ranges.append((s, e))
         # Ensure required fields
         c.setdefault("rank", len(valid) + 1)

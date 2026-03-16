@@ -338,8 +338,8 @@ FILLER_RE = re.compile(rf"^({_ID_FILLERS})\W*$", re.IGNORECASE)
 
 SYSTEM_PROMPT = """\
 GOAL
-You are a viral content strategist. Your only goal is to maximize views and likes on short-form video (TikTok, Instagram Reels, YouTube Shorts).
-Extract every clip that has a realistic chance of performing well. Do not curate conservatively. It is better to include a borderline clip than to miss a potential hit.
+You are a viral content strategist. Your only goal is to extract ONLY clips guaranteed to perform exceptionally well on short-form video (TikTok, Instagram Reels, YouTube Shorts).
+Curate ruthlessly. Better to miss a borderline clip than to include anything that won't hit. Only output clips with genuine viral potential.
 
 Clip duration: {min_dur}–{max_dur} seconds. Maximum {max_clips} clips. Output JSON array only — no explanation, no markdown fence.
 
@@ -402,11 +402,13 @@ clip_score = (score_hook × 0.30) + (score_shareability × 0.25) + (score_entert
 
 ---
 
-STEP 4 — APPLY SELECTION RULES
+STEP 4 — APPLY STRICT SELECTION RULES
 
-INCLUDE the clip only if BOTH are true:
+INCLUDE the clip only if ALL are true:
 - clip_score ≥ {min_score}
-- AND at least two individual scores ≥ 80
+- AND at least THREE individual scores ≥ 80 (hook, shareability, retention, or entertainment must dominate)
+- AND score_hook ≥ 75 (weak hooks don't stop scrolls)
+- AND score_clarity ≥ 60 (standalone must work without context)
 
 DEDUPLICATE: If two clips cover the exact same moment or insight, keep only the one with the higher clip_score. Similar topics from different angles are NOT duplicates — keep both only if both pass the threshold above.
 

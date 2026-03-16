@@ -23,7 +23,7 @@ import argparse
 import schedule
 import pytz
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from instagrapi import Client as IGClient
 from instagrapi.exceptions import LoginRequired
@@ -54,22 +54,28 @@ from config import (
     ENABLE_INSTAGRAM, ENABLE_YOUTUBE, ENABLE_TIKTOK,
 )
 
-# ── Dynamic daily upload target ──────────────────────────────────────
-# Each day a fresh target is drawn from a weighted distribution.
+# ── Fixed weekly upload pattern ──────────────────────────────────────
+# Each week follows a fixed pattern: [0, 1, 1, 1, 1, 1, 2]
+# This guarantees exactly 7 posts/week with 1 rest day, maintaining consistency.
 #
 # Research basis (as of 2024-2025):
-#   • TikTok Creator Academy: 3–5/day optimal for growth accounts
-#   • Meta Business Blog: 3–5 Reels/day for short-form clip accounts
-#   • YouTube Creator Insider: 2–4 Shorts/day to avoid cannibalisation
+#   • Instagram Reels: 5–7/week optimal for growth (3.7x follower growth vs lower frequency)
+#   • Buffer analysis of 2M+ posts: 6–9 posts/week sees peak performance
+#   • Key insight: Include rest days for quality & algorithm rewards watch time over sheer volume
 #
-# Weights → [3,4,5] = [15%, 35%, 35%]
-# Peak at 4–5: highest algorithmic reach without triggering spam filters.
-_DAILY_UPLOAD_POOL   = [3, 4, 5]
-_DAILY_UPLOAD_WEIGHTS = [3, 7, 5]
+# Pattern: [0, 1, 1, 1, 1, 1, 2]
+#   • 1 rest day (0) — algorithm fatigue prevention
+#   • 5 days at 1 post/day — core consistent growth
+#   • 1 day with 2 posts — capitalize on trending moments
+# Total: 7 posts/week = ~1/day (optimal growth rate with sustainability)
+# The order shuffles each week to maintain organic variation.
+_WEEKLY_PATTERN = [0, 1, 1, 1, 1, 1, 2]
+_weekly_shuffle: list[int] = []
+_weekly_start_date = None
 
-# Drawn fresh every midnight; shared across all platforms since one slot
+# Drawn from the weekly pattern; shared across all platforms since one slot
 # = one cross-platform post.
-_daily_target: int = 4  # will be overwritten on first reset
+_daily_target: int = 1  # will be overwritten on first reset
 
 # Track daily upload counts (reset at midnight WIB)
 _daily_counts = {
@@ -116,15 +122,37 @@ def _inter_platform_delay() -> None:
 
 
 def reset_daily_counts_if_needed():
-    """Reset upload counters and draw a fresh daily target at midnight WIB."""
-    global _daily_target
+    """Reset upload counters and draw today's target from the weekly pattern.
+    
+    The weekly pattern is shuffled once per week (Monday start) to ensure:
+      • Exactly 1 rest day per week
+      • 5 days at 1 post/day
+      • 1 day at 2 posts/day
+    """
+    global _daily_target, _weekly_shuffle, _weekly_start_date
+    
     today = datetime.now(pytz.timezone("Asia/Jakarta")).date()
+    
+    # Calculate week start (Monday)
+    week_start = today - timedelta(days=today.weekday())
+    
+    # Regenerate shuffle at start of each week
+    if _weekly_start_date != week_start:
+        _weekly_shuffle = _WEEKLY_PATTERN.copy()
+        random.shuffle(_weekly_shuffle)
+        _weekly_start_date = week_start
+        log.info(f"🔄 Weekly pattern shuffled for week starting {week_start}: {_weekly_shuffle}")
+    
+    # Get today's position in the week (0=Monday, 6=Sunday)
+    day_of_week = today.weekday()
+    _daily_target = _weekly_shuffle[day_of_week]
+    
+    # Reset daily counts if needed
     if _daily_counts["last_reset_date"] != today:
         _daily_counts["youtube"] = 0
         _daily_counts["instagram"] = 0
         _daily_counts["tiktok"] = 0
         _daily_counts["last_reset_date"] = today
-        _daily_target = random.choices(_DAILY_UPLOAD_POOL, weights=_DAILY_UPLOAD_WEIGHTS, k=1)[0]
         log.info(f"📊 Daily counters reset for {today}. Today's upload target: {_daily_target}/platform")
 
 # ── Logging ──────────────────────────────────────────────────
@@ -214,20 +242,24 @@ def ensure_media_tools_ready() -> bool:
 #         Everyone is home, relaxed, long scroll sessions.
 #  12:00  Lunch break. Commuters + office workers peak.
 #         2nd highest engagement across all 3 platforms.
-#  19:00  After dinner / Maghrib. Family screen time begins.
+#  19:00  Post-Maghrib / pre-Isya. Screens return after prayer.
 #         Reels/Shorts perform especially well here.
-#  17:00  End of school/work. Commute scroll.
-#         Strong for TikTok and Reels.
+#  16:00  End of school / late work. Pre-Maghrib window.
+#         Strong for TikTok and Reels. Avoids ~17:45 prayer dip.
 #  09:00  Mid-morning work break. Consistent but lower.
 #  07:00  Morning commute. Decent reach, lower engagement rate.
+#
+#  Note:  Maghrib falls ~17:45–18:15 WIB year-round (equatorial).
+#         Avoid scheduling into that window for a Muslim-majority
+#         audience — engagement notably dips during prayer time.
 # ═══════════════════════════════════════════════════════════
 
 SCHEDULE_SLOTS = [
     # (time_WIB, tier, label)
     ("21:00", 1, "Peak prime time"),
     ("12:00", 1, "Lunch peak"),
-    ("19:00", 2, "After dinner"),
-    ("17:00", 2, "End of work/school"),
+    ("19:00", 2, "Post-Maghrib"),
+    ("16:00", 2, "End of work/school"),   # shifted from 17:00 — avoids Maghrib dip
     ("09:00", 3, "Morning work break"),
     ("07:00", 3, "Morning commute"),
 ]
@@ -407,12 +439,12 @@ def save_clips(clips: list):
 
 
 
-# Enhanced: pick best clip for slot and day, using engagement statistics
-def get_clip_for_slot_and_day(slot_time: str, day_name: str) -> tuple:
+# Pick best clip for the day, using engagement statistics
+def get_clip_for_day(day_name: str) -> tuple:
     """
-    Pick the best clip for a given time slot and day, using engagement statistics.
+    Pick the best clip for a given day, using engagement statistics.
     Matching logic:
-      - For the current day and slot, multiply engagement score by clip_score (or class_score if present)
+      - Multiply engagement score by clip_score (or class_score if present)
       - Sort all available clips by this combined score
       - Return the highest scoring clip
     """
@@ -420,8 +452,6 @@ def get_clip_for_slot_and_day(slot_time: str, day_name: str) -> tuple:
     if not clips:
         return None, None
 
-    slot_info = next((s for s in SCHEDULE_SLOTS if s[0] == slot_time), None)
-    tier = slot_info[1] if slot_info else 3
     engagement = DAY_ENGAGEMENT.get(day_name, 1.0)
 
     available = []
@@ -1246,7 +1276,7 @@ def make_post_job(slot_time: str, tier: int, label: str):
         reset_daily_counts_if_needed()
 
         # Post ONE clip per slot (not all clips!)
-        clip, video_path = get_clip_for_slot_and_day(slot_time, day_name)
+        clip, video_path = get_clip_for_day(day_name)
         if clip is None:
             log.warning("📭 Queue empty — nothing to post.")
             return
@@ -1497,8 +1527,8 @@ def main(test_file: str | None = None,
     log.info(f"\n📋 {len(clips)} clips in queue at startup")
     log.info("   (clips.json is re-read fresh before every upload)")
     log.info("")
-    log.info(f"📊 Daily uploads: {_DAILY_UPLOAD_POOL[0]}–{_DAILY_UPLOAD_POOL[-1]}/platform (drawn fresh each midnight, weighted toward {_DAILY_UPLOAD_POOL[1]}–{_DAILY_UPLOAD_POOL[2]})")
-    log.info("")
+    log.info(f"📊 Weekly uploads: exactly 7/week (1 rest, 5×1, 1×2) — shuffled each Monday")
+    log.info("   Distribution: guaranteed ~1.0/day with organic variation per week")
 
     for slot_time, tier, label in SCHEDULE_SLOTS:
         job_fn = make_post_job(slot_time, tier, label)

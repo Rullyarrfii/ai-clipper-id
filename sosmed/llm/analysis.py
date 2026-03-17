@@ -103,11 +103,11 @@ def _compute_clip_score(c: dict[str, Any]) -> int:
     total = hook + retention + shareability + entertainment + clarity
     if total > 0:
         return round(
-            hook * 0.30
-            + shareability * 0.25
-            + entertainment * 0.25
-            + retention * 0.15
-            + clarity * 0.05
+            retention * 0.35
+            + clarity * 0.25
+            + hook * 0.20
+            + shareability * 0.15
+            + entertainment * 0.05
         )
     return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
 
@@ -151,7 +151,7 @@ def _validate_clips(
         except (KeyError, ValueError, TypeError):
             continue
         score = _compute_clip_score(c)
-        # Penalize low-value clips (intros, outros, disclaimers) — they never go viral
+        # Penalize low-value clips (intros, outros, disclaimers)
         if _is_low_value_clip(c):
             score = max(0, score - 25)
         c["_score"] = score
@@ -169,10 +169,10 @@ def _validate_clips(
         score = c["_score"]
         if score < min_score:
             continue  # strict score threshold — no leniency
-        # Strong hook requirement (first viral signal)
+        # Lenient hook requirement (educational content may not have a massive hook)
         hook_score = int(c.get("score_hook", 0) or 0)
-        if hook_score < 75:
-            continue  # hooks under 75 don't stop scrolls reliably
+        if hook_score < 60:
+            continue  # lower hook threshold for education
         # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))
@@ -193,7 +193,7 @@ def _validate_clips(
         c.setdefault("score_hook", 0)
         c.setdefault("score_retention", 0)
         c.setdefault("score_shareability", 0)
-        c.setdefault("score_entertainment", 0)
+        c.setdefault("score_educational", 0)
         c.setdefault("score_clarity", 0)
         c["clip_score"] = score
         c.pop("_score", None)

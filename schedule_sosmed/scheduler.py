@@ -67,7 +67,7 @@ from config import (
 _WEEKLY_PATTERN = [0, 1, 1, 1, 1, 1, 1]
 
 # Active-day upload target options. 3-4 posts/day now configured globally.
-_DAILY_ACTIVE_POSTS = [3, 4]
+DAILY_ACTIVE_POSTS = [3, 4]
 _weekly_shuffle: list[int] = []
 _weekly_start_date = None
 
@@ -145,11 +145,11 @@ def reset_daily_counts_if_needed():
     day_of_week = today.weekday()
     scheduled_value = _weekly_shuffle[day_of_week]
 
-    # If the day is a rest day, target is zero. Otherwise randomize based on _DAILY_ACTIVE_POSTS.
+    # If the day is a rest day, target is zero. Otherwise randomize based on DAILY_ACTIVE_POSTS.
     if scheduled_value == 0:
         today_target = 0
     else:
-        today_target = random.choice(_DAILY_ACTIVE_POSTS)
+        today_target = random.choice(DAILY_ACTIVE_POSTS)
 
     # Reset daily counts at midnight and set the target once per day
     if _daily_counts["last_reset_date"] != today:
@@ -265,12 +265,12 @@ def ensure_media_tools_ready() -> bool:
 
 SCHEDULE_SLOTS = [
     # (time_WIB, tier, label)
-    ("21:00", 1, "Peak prime time"),
-    ("12:00", 1, "Lunch peak"),
-    ("19:00", 2, "Post-Maghrib"),
-    ("16:00", 2, "End of work/school"),   # shifted from 17:00 — avoids Maghrib dip
-    ("09:00", 3, "Morning work break"),
-    ("07:00", 3, "Morning commute"),
+    ("20:45", 1, "Peak prime time"),
+    ("11:50", 1, "Lunch peak"),
+    ("18:50", 2, "Post-Maghrib"),
+    ("15:50", 2, "End of work/school"),
+    ("08:50", 3, "Morning work break"),
+    ("06:50", 3, "Morning commute"),
 ]
 
 # ── Day-of-week slot selection ──────────────────────────────
@@ -1536,8 +1536,8 @@ def main(test_file: str | None = None,
     log.info(f"\n📋 {len(clips)} clips in queue at startup")
     log.info("   (clips.json is re-read fresh before every upload)")
     log.info("")
-    log.info(f"📊 Weekly uploads: 6 active days + 1 rest day, active days {_DAILY_ACTIVE_POSTS} posts — shuffled each Monday")
-    log.info(f"   Distribution: randomized {_DAILY_ACTIVE_POSTS} posts/day on active days, with one recovery day")
+    log.info(f"📊 Weekly uploads: 6 active days + 1 rest day, active days {DAILY_ACTIVE_POSTS} posts — shuffled each Monday")
+    log.info(f"   Distribution: randomized {DAILY_ACTIVE_POSTS} posts/day on active days, with one recovery day")
 
     for slot_time, tier, label in SCHEDULE_SLOTS:
         job_fn = make_post_job(slot_time, tier, label)

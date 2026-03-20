@@ -54,22 +54,20 @@ from config import (
     ENABLE_INSTAGRAM, ENABLE_YOUTUBE, ENABLE_TIKTOK,
 )
 
-# ── Fixed weekly upload pattern ──────────────────────────────────────
-# Each week follows a fixed pattern: [0, 1, 1, 1, 1, 1, 2]
-# This guarantees exactly 7 posts/week with 1 rest day, maintaining consistency.
+# ── Weekly upload pattern (rest + daily 3–4 posts) ───────────────────
+# Each week follows a fixed pattern: [0, 1, 1, 1, 1, 1, 1]
+# This guarantees 1 rest day per week + 6 active days. On active days we
+# randomize between 3 and 4 posts to keep timing organic rather than rigid.
 #
-# Research basis (as of 2024-2025):
-#   • Instagram Reels: 5–7/week optimal for growth (3.7x follower growth vs lower frequency)
-#   • Buffer analysis of 2M+ posts: 6–9 posts/week sees peak performance
-#   • Key insight: Include rest days for quality & algorithm rewards watch time over sheer volume
-#
-# Pattern: [0, 1, 1, 1, 1, 1, 2]
+# Pattern: [0, 1, 1, 1, 1, 1, 1]
 #   • 1 rest day (0) — algorithm fatigue prevention
-#   • 5 days at 1 post/day — core consistent growth
-#   • 1 day with 2 posts — capitalize on trending moments
-# Total: 7 posts/week = ~1/day (optimal growth rate with sustainability)
+#   • 6 active days (3–4 posts each)
+# Total: 18–24 posts/week with consistent rest spacing.
 # The order shuffles each week to maintain organic variation.
-_WEEKLY_PATTERN = [0, 1, 1, 1, 1, 1, 2]
+_WEEKLY_PATTERN = [0, 1, 1, 1, 1, 1, 1]
+
+# Active-day upload target options. 3-4 posts/day now configured globally.
+_DAILY_ACTIVE_POSTS = [3, 4]
 _weekly_shuffle: list[int] = []
 _weekly_start_date = None
 
@@ -145,17 +143,28 @@ def reset_daily_counts_if_needed():
     
     # Get today's position in the week (0=Monday, 6=Sunday)
     day_of_week = today.weekday()
-    _daily_target = _weekly_shuffle[day_of_week]
-    
-    # Reset daily counts if needed
+    scheduled_value = _weekly_shuffle[day_of_week]
+
+    # If the day is a rest day, target is zero. Otherwise randomize based on _DAILY_ACTIVE_POSTS.
+    if scheduled_value == 0:
+        today_target = 0
+    else:
+        today_target = random.choice(_DAILY_ACTIVE_POSTS)
+
+    # Reset daily counts at midnight and set the target once per day
     if _daily_counts["last_reset_date"] != today:
         _daily_counts["youtube"] = 0
         _daily_counts["instagram"] = 0
         _daily_counts["tiktok"] = 0
         _daily_counts["last_reset_date"] = today
+        _daily_target = today_target
         log.info(f"📊 Daily counters reset for {today}. Today's upload target: {_daily_target}/platform")
-
-# ── Logging ──────────────────────────────────────────────────
+    else:
+        # Keep stable target during the day; detect misalignment and correct if needed
+        if scheduled_value == 0:
+            _daily_target = 0
+        elif _daily_target not in (3, 4):
+            _daily_target = today_target
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -269,8 +278,8 @@ SCHEDULE_SLOTS = [
 # looking organic (humans don't post at exact same 6 times daily).
 # Each day randomly picks a subset of slots from the full list.
 # Tier-1 slots are always included; lower tiers are included
-# probabilistically.  The result is 2–4 posts on a typical day
-# instead of a rigid 6.
+# probabilistically.  The result is 3–4 posts on active days (0 on rest day)
+# instead of a rigid schedule.
 
 # Keep track of which slots are active today (regenerated at midnight)
 DAY_ENGAGEMENT = {
@@ -1527,8 +1536,8 @@ def main(test_file: str | None = None,
     log.info(f"\n📋 {len(clips)} clips in queue at startup")
     log.info("   (clips.json is re-read fresh before every upload)")
     log.info("")
-    log.info(f"📊 Weekly uploads: exactly 7/week (1 rest, 5×1, 1×2) — shuffled each Monday")
-    log.info("   Distribution: guaranteed ~1.0/day with organic variation per week")
+    log.info(f"📊 Weekly uploads: 6 active days + 1 rest day, active days {_DAILY_ACTIVE_POSTS} posts — shuffled each Monday")
+    log.info(f"   Distribution: randomized {_DAILY_ACTIVE_POSTS} posts/day on active days, with one recovery day")
 
     for slot_time, tier, label in SCHEDULE_SLOTS:
         job_fn = make_post_job(slot_time, tier, label)

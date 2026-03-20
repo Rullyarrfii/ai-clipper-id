@@ -228,7 +228,7 @@ def tighten_clip_boundaries(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━ CONSTANTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Default free model on OpenRouter
-DEFAULT_OPENROUTER_MODEL = "openrouter/hunter-alpha"
+DEFAULT_OPENROUTER_MODEL = "minimax/minimax-m2.5:free"
 DEFAULT_OPENROUTER_BASE  = "https://openrouter.ai/api/v1"
 
 MAX_CLIPS_HARD_LIMIT = 72  # absolute ceiling — quality over quantity

@@ -38,8 +38,6 @@ def _is_likely_music(txt: str, no_speech_prob: float) -> bool:
         return False
     
     clean = txt.strip().lower()
-    words = clean.split()
-    word_count = len(words)
     
     # Only use no_speech_prob as a STRONG filter (>0.75, not 0.5)
     # Whisper's confidence needs to be very high that it's NOT speech

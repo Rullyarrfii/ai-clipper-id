@@ -84,32 +84,66 @@ def _compute_clip_score(c: dict[str, Any]) -> int:
     """Compute clip_score as weighted average tuned for TikTok virality.
 
     Formula:
-      hook*0.30 + shareability*0.25 + entertainment*0.25 + retention*0.15 + clarity*0.05
+            retention*0.35 + clarity*0.25 + educational*0.20 + hook*0.15 + shareability*0.05
     """
-    hook = int(c.get("score_hook", 0) or 0)
-    retention = int(c.get("score_retention", 0) or 0)
-    shareability = int(c.get("score_shareability", 0) or 0)
-    entertainment = int(c.get("score_entertainment", 0) or 0)
-    clarity = int(c.get("score_clarity", 0) or 0)
+    scores = _normalize_score_fields(c)
+    hook = scores["score_hook"]
+    retention = scores["score_retention"]
+    shareability = scores["score_shareability"]
+    educational = scores["score_educational"]
+    clarity = scores["score_clarity"]
 
-    # Also check legacy field names for backward compatibility
-    if hook + retention + shareability + entertainment + clarity == 0:
-        hook = int(c.get("score_energy", 0) or 0)
-        retention = int(c.get("score_informative", 0) or 0)
-        shareability = int(c.get("score_newsworthy", 0) or 0)
-        clarity = int(c.get("score_easy", 0) or 0)
-        entertainment = hook  # approximate
-
-    total = hook + retention + shareability + entertainment + clarity
+    total = hook + retention + shareability + educational + clarity
     if total > 0:
         return round(
             retention * 0.35
             + clarity * 0.25
-            + hook * 0.20
-            + shareability * 0.15
-            + entertainment * 0.05
+            + educational * 0.20
+            + hook * 0.15
+            + shareability * 0.05
         )
     return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
+
+
+def _to_score(value: Any) -> int:
+    """Parse score-like values into a bounded integer in [0, 100]."""
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, n))
+
+
+def _normalize_score_fields(c: dict[str, Any]) -> dict[str, int]:
+    """
+    Normalize per-dimension score fields to keep output stable.
+
+    If the model returns only clip_score but omits all five dimensions,
+    backfill the five dimensions from clip_score to avoid all-zero metrics
+    in persisted clips.
+    """
+    hook = _to_score(c.get("score_hook", c.get("score_energy", 0)))
+    retention = _to_score(c.get("score_retention", c.get("score_informative", 0)))
+    shareability = _to_score(c.get("score_shareability", c.get("score_newsworthy", 0)))
+    educational = _to_score(c.get("score_educational", c.get("score_entertainment", 0)))
+    clarity = _to_score(c.get("score_clarity", c.get("score_easy", 0)))
+
+    if hook + retention + shareability + educational + clarity == 0:
+        inferred = _to_score(c.get("clip_score", c.get("engagement_score", 0)))
+        if inferred > 0:
+            hook = inferred
+            retention = inferred
+            shareability = inferred
+            educational = inferred
+            clarity = inferred
+
+    return {
+        "score_hook": hook,
+        "score_retention": retention,
+        "score_shareability": shareability,
+        "score_educational": educational,
+        "score_clarity": clarity,
+    }
 
 
 # Titles/topics that indicate non-viral content (intros, outros, etc.)
@@ -169,10 +203,13 @@ def _validate_clips(
         score = c["_score"]
         if score < min_score:
             continue  # strict score threshold — no leniency
-        # Lenient hook requirement (educational content may not have a massive hook)
-        hook_score = int(c.get("score_hook", 0) or 0)
-        if hook_score < 60:
-            continue  # lower hook threshold for education
+        # Only enforce hook floor when score_hook is explicitly provided.
+        # Some model outputs omit score_hook but still provide enough signal in clip_score.
+        hook_raw = c.get("score_hook")
+        if hook_raw is not None:
+            hook_score = int(hook_raw or 0)
+            if hook_score < 60:
+                continue  # lower hook threshold for education
         # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))
@@ -190,11 +227,7 @@ def _validate_clips(
         c.setdefault("caption", "")
         c.setdefault("reason", "")
         c.setdefault("hook", "")
-        c.setdefault("score_hook", 0)
-        c.setdefault("score_retention", 0)
-        c.setdefault("score_shareability", 0)
-        c.setdefault("score_educational", 0)
-        c.setdefault("score_clarity", 0)
+        c.update(_normalize_score_fields(c))
         c["clip_score"] = score
         c.pop("_score", None)
         c.pop("engagement_score", None)

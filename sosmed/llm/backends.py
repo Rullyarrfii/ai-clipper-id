@@ -18,7 +18,7 @@ def _retry_on_rate_limit(
     initial_wait: float = 2.0,
 ) -> str:
     """
-    Retry API call on rate limit errors with exponential backoff.
+    Retry API call on rate limit errors or empty responses with exponential backoff.
     
     Args:
         api_call_fn: Callable that makes the API call (no args)
@@ -33,7 +33,19 @@ def _retry_on_rate_limit(
     """
     for attempt in range(max_retries):
         try:
-            return api_call_fn()
+            response = api_call_fn()
+            # Treat empty response as retriable error
+            if response:
+                return response
+            
+            # Empty response - retry unless this is the last attempt
+            if attempt < max_retries - 1:
+                wait_time = initial_wait * (2 ** attempt)
+                log("WARN", f"Empty response. Retry {attempt + 1}/{max_retries} in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                log("ERROR", f"Empty response after {max_retries} retries")
+                return ""
         except Exception as e:
             # Check for rate limit error (429)
             is_rate_limit = (
@@ -62,8 +74,11 @@ def _parse_llm_json(raw: str) -> tuple[list[dict[str, Any]], bool]:
     Returns:
         (parsed_data, success) — success=False if parsing failed
     """
+    # Remove any thinking block that some reasoning models might output in content
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    
     # Strip markdown code fences
-    cleaned = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+    cleaned = re.sub(r"```(?:json)?", "", cleaned).strip().rstrip("`").strip()
     # Try direct parse
     try:
         data = json.loads(cleaned)
@@ -90,7 +105,7 @@ def _retry_on_json_failure(
     api_call_fn,
     system: str,
     user: str,
-    max_retries: int = 2,
+    max_attempts: int = 2,
 ) -> list[dict[str, Any]]:
     """
     Retry LLM call with modified prompts if JSON parsing fails.
@@ -99,7 +114,7 @@ def _retry_on_json_failure(
         api_call_fn: Callable that takes (system, user) and returns raw response text
         system: System prompt
         user: User prompt
-        max_retries: Number of retries (1 = no retry, just one attempt)
+        max_attempts: Total number of attempts (1 = single attempt, no retry)
     
     Returns:
         Parsed clips, or empty list if all attempts fail
@@ -109,8 +124,11 @@ def _retry_on_json_failure(
         "\n\n[RETRY: Please respond with ONLY a valid JSON array, no other text. Start with [ and end with ].]",
         "\n\n[RETRY 2: Output ONLY valid JSON array. Example format: [{\"start\": 0, \"end\": 10, \"reason\": \"...\"}, ...].]",
     ]
-    
-    for attempt in range(min(max_retries, len(retry_prompts))):
+
+    # Initialize raw so it is always bound even if the loop is skipped (max_attempts=0).
+    raw = ""
+
+    for attempt in range(min(max_attempts, len(retry_prompts))):
         modified_user = user + retry_prompts[attempt]
         raw = api_call_fn(system, modified_user)
         clips, success = _parse_llm_json(raw)
@@ -118,11 +136,32 @@ def _retry_on_json_failure(
         if success:
             return clips
         
-        if attempt < max_retries - 1:
+        if attempt < max_attempts - 1:
             log("WARN", f"JSON parse failed (attempt {attempt + 1}), retrying with modified prompt...")
+            log("DEBUG", f"Raw output that failed to parse: {raw[:500]}...")
     
     log("ERROR", "Could not parse JSON from LLM response after retries")
+    log("ERROR", f"Final raw output: {raw}")
     return []
+
+
+def _is_reasoning_unsupported(error: Exception) -> bool:
+    """
+    Detect whether an API error indicates the model does not support reasoning.
+    OpenRouter surfaces this as a 400 with a message about the parameter being
+    invalid, unsupported, or not allowed for the chosen model.
+    """
+    msg = str(error).lower()
+    markers = (
+        "reasoning",
+        "unsupported parameter",
+        "invalid parameter",
+        "not supported",
+        "unknown field",
+        "extra inputs are not permitted",
+        "400",
+    )
+    return any(m in msg for m in markers)
 
 
 def openrouter(
@@ -131,8 +170,21 @@ def openrouter(
     api_key: str,
     model: str = DEFAULT_OPENROUTER_MODEL,
     base_url: str = DEFAULT_OPENROUTER_BASE,
+    enable_reasoning: bool = True,
 ) -> list[dict[str, Any]]:
-    """Call OpenRouter (OpenAI-compatible API). Default: free model. With retry on JSON parse failure and rate limits."""
+    """
+    Call OpenRouter (OpenAI-compatible API).
+
+    When *enable_reasoning* is True the call is made with
+    ``reasoning={"effort": "high"}`` and temperature=1 (required by most
+    reasoning-capable models).  If the model does not support reasoning the
+    error is caught and the call is transparently retried without it at the
+    normal temperature.
+
+    The reasoning trace (``message.reasoning``) is logged at DEBUG level but
+    is never mixed into the text that gets JSON-parsed, so downstream parsing
+    is unaffected regardless of whether reasoning fired.
+    """
     try:
         from openai import OpenAI
     except ImportError:
@@ -140,38 +192,109 @@ def openrouter(
         sys.exit(1)
 
     log("LLM", f"OpenRouter → {BOLD}{model}{RESET}")
-    
-    def _call_openrouter(sys_prompt: str, user_prompt: str) -> str:
-        """Internal function that makes the actual API call with rate limit retry."""
-        def api_call():
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    common_headers = {
+        "HTTP-Referer": "https://github.com/ai-video-clipper",
+        "X-Title": "AI Video Clipper",
+    }
+
+    def _call_once(sys_prompt: str, user_prompt: str, reasoning: bool) -> str:
+        """
+        Single attempt: call the API with or without reasoning and return the
+        text content of the reply.  Rate-limit retries are handled inside here.
+        """
+        def api_call() -> str:
+            kwargs: dict[str, Any] = dict(
                 model=model,
-                max_tokens=8192,
-                temperature=0.3,
+                max_tokens=16000 if reasoning else 8192,
+                # Reasoning models require temperature=1; use 0.3 otherwise.
+                temperature=1 if reasoning else 0.3,
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                extra_headers={
-                    "HTTP-Referer": "https://github.com/ai-video-clipper",
-                    "X-Title": "AI Video Clipper",
-                },
-                extra_body={
-                    "reasoning": {
-                        "effort": "high"
-                    }
-                }
+                extra_headers=common_headers,
             )
-            reasoning = getattr(resp.choices[0].message, "reasoning", None)
             if reasoning:
-                log("LLM-REASONING", "Reasoning generated for this response.")
-            return resp.choices[0].message.content or ""
-        
+                # OpenRouter forwards this to the underlying provider.
+                # effort can be "low" | "medium" | "high".
+                kwargs["extra_body"] = {"reasoning": {"effort": "high"}}
+
+            resp = client.chat.completions.create(**kwargs)
+            message = resp.choices[0].message
+
+            reasoning_text: str = getattr(message, "reasoning", None) or ""
+            content: str = message.content or ""
+
+            if reasoning_text:
+                preview = reasoning_text[:300].replace("\n", " ")
+                log("DEBUG", f"Reasoning trace ({len(reasoning_text)} chars): {preview}…")
+
+            # Some reasoning models (e.g. StepFun) place their final JSON
+            # answer inside the reasoning field and leave content empty, or
+            # vice-versa.  We pick whichever field contains parseable JSON;
+            # if both are non-empty we prefer content (the intended answer).
+            if content:
+                _, content_ok = _parse_llm_json(content)
+            else:
+                content_ok = False
+
+            if content_ok:
+                return content
+
+            # content missing or un-parseable — try reasoning field as fallback
+            if reasoning_text:
+                _, reasoning_ok = _parse_llm_json(reasoning_text)
+                if reasoning_ok:
+                    log("DEBUG", "JSON found in reasoning field; using that as answer.")
+                    return reasoning_text
+
+            # Return whatever we have (may be empty — _retry_on_rate_limit
+            # will handle the retry loop if truly empty).
+            return content or reasoning_text
+
         return _retry_on_rate_limit(api_call, max_retries=5, initial_wait=2.0)
-    
-    clips = _retry_on_json_failure(_call_openrouter, system, user, max_retries=2)
-    log("OK", f"OpenRouter returned {len(clips)} clips")
+
+    def _call_openrouter(sys_prompt: str, user_prompt: str) -> str:
+        """
+        Try with reasoning first; fall back to a plain call if the model
+        signals it does not support the reasoning parameter.
+        """
+        if not enable_reasoning:
+            return _call_once(sys_prompt, user_prompt, reasoning=False)
+
+        try:
+            result = _call_once(sys_prompt, user_prompt, reasoning=True)
+            log("DEBUG", "Reasoning mode: ON")
+            return result
+        except Exception as e:
+            if _is_reasoning_unsupported(e):
+                log("WARN", f"Model does not support reasoning ({e}); retrying without.")
+                return _call_once(sys_prompt, user_prompt, reasoning=False)
+            raise  # unrelated error — propagate as usual
+
+    def _call_openrouter_no_reasoning(sys_prompt: str, user_prompt: str) -> str:
+        """Plain call with reasoning disabled — used as last-resort fallback."""
+        return _call_once(sys_prompt, user_prompt, reasoning=False)
+
+    # First attempt: with reasoning (if enabled).
+    clips = _retry_on_json_failure(_call_openrouter, system, user, max_attempts=2)
+
+    # Last-resort fallback: if reasoning produced nothing, try without it.
+    if not clips and enable_reasoning:
+        log("WARN", "Reasoning mode yielded no clips — retrying with reasoning OFF.")
+        clips = _retry_on_json_failure(_call_openrouter_no_reasoning, system, user, max_attempts=2)
+        if clips:
+            log("OK", f"OpenRouter returned {len(clips)} clips (reasoning OFF fallback)")
+        else:
+            log("WARN", "OpenRouter returned 0 clips even without reasoning. Raw response logged above.")
+        return clips
+
+    if clips:
+        log("OK", f"OpenRouter returned {len(clips)} clips")
+    else:
+        log("WARN", "OpenRouter returned 0 clips — model found nothing to clip in this chunk, or JSON parsing failed. Raw response logged above.")
     return clips
 
 
@@ -183,14 +306,17 @@ def anthropic(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
         log("ERROR", "anthropic SDK not installed.  pip install anthropic")
         sys.exit(1)
 
-    log("LLM", f"Anthropic → {BOLD}claude-sonnet-4-20250514{RESET}")
+    # FIX: updated from stale snapshot ID "claude-sonnet-4-20250514" to the
+    # current model string "claude-sonnet-4-6".
+    model = "claude-sonnet-4-6"
+    log("LLM", f"Anthropic → {BOLD}{model}{RESET}")
     
     def _call_anthropic(sys_prompt: str, user_prompt: str) -> str:
-        """Internal function that makes the actual API call with rate limit retry."""
+        """Internal function that makes the actual API call and returns raw response."""
         def api_call():
             client = anthropic.Anthropic(api_key=api_key)
             resp = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=model,
                 max_tokens=8192,
                 system=sys_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
@@ -199,10 +325,9 @@ def anthropic(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
         
         return _retry_on_rate_limit(api_call, max_retries=5, initial_wait=2.0)
     
-    clips = _retry_on_json_failure(_call_anthropic, system, user, max_retries=2)
+    clips = _retry_on_json_failure(_call_anthropic, system, user, max_attempts=2)
     log("OK", f"Anthropic returned {len(clips)} clips")
     return clips
-
 
 
 def openai(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
@@ -216,7 +341,7 @@ def openai(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
     log("LLM", f"OpenAI → {BOLD}gpt-4o{RESET}")
     
     def _call_openai(sys_prompt: str, user_prompt: str) -> str:
-        """Internal function that makes the actual API call with rate limit retry."""
+        """Internal function that makes the actual API call and returns raw response."""
         def api_call():
             client = OpenAI(api_key=api_key)
             resp = client.chat.completions.create(
@@ -226,23 +351,14 @@ def openai(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                extra_body={
-                    "reasoning": {
-                        "effort": "high"
-                    }
-                }
             )
-            reasoning = getattr(resp.choices[0].message, "reasoning", None)
-            if reasoning:
-                log("LLM-REASONING", "Reasoning generated for this response.")
             return resp.choices[0].message.content or ""
         
         return _retry_on_rate_limit(api_call, max_retries=5, initial_wait=2.0)
     
-    clips = _retry_on_json_failure(_call_openai, system, user, max_retries=2)
+    clips = _retry_on_json_failure(_call_openai, system, user, max_attempts=2)
     log("OK", f"OpenAI returned {len(clips)} clips")
     return clips
-
 
 
 def ollama(system: str, user: str) -> list[dict[str, Any]]:
@@ -276,10 +392,9 @@ def ollama(system: str, user: str) -> list[dict[str, Any]]:
         
         return _retry_on_rate_limit(api_call, max_retries=5, initial_wait=2.0)
     
-    clips = _retry_on_json_failure(_call_ollama, system, user, max_retries=2)
+    clips = _retry_on_json_failure(_call_ollama, system, user, max_attempts=2)
     log("OK", f"Ollama returned {len(clips)} clips")
     return clips
-
 
 
 def call_llm(
@@ -287,6 +402,7 @@ def call_llm(
     user: str,
     api_key: str | None = None,
     llm_model: str | None = None,
+    enable_reasoning: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Call the best available LLM backend and return raw parsed clips.
@@ -296,6 +412,12 @@ def call_llm(
       2. Anthropic   (ANTHROPIC_API_KEY)
       3. OpenAI      (OPENAI_API_KEY)
       4. Ollama      (local, no key needed)
+
+    Args:
+        enable_reasoning: When True (default), OpenRouter calls will request
+            extended reasoning from the model.  If the model does not support
+            it the call is transparently retried without reasoning.  Set to
+            False to always skip reasoning (saves tokens / latency).
     """
     or_key = api_key or os.getenv("OPENROUTER_API_KEY")
     ant_key = os.getenv("ANTHROPIC_API_KEY")
@@ -303,7 +425,7 @@ def call_llm(
 
     if or_key:
         model = llm_model or os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
-        return openrouter(system, user, or_key, model=model)
+        return openrouter(system, user, or_key, model=model, enable_reasoning=enable_reasoning)
     elif ant_key:
         return anthropic(system, user, ant_key)
     elif oai_key:

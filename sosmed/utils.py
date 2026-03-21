@@ -228,7 +228,7 @@ def tighten_clip_boundaries(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━ CONSTANTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Default free model on OpenRouter
-DEFAULT_OPENROUTER_MODEL = "stepfun/step-3.5-flash:free"
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 DEFAULT_OPENROUTER_BASE  = "https://openrouter.ai/api/v1"
 
 MAX_CLIPS_HARD_LIMIT = 72  # absolute ceiling — quality over quantity

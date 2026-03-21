@@ -381,6 +381,25 @@ def load_clips() -> list:
     for clip in clips:
         if not clip.get("filename"):
             log.warning(f"clip missing 'filename' field: rank {clip.get('rank')} title '{clip.get('title')}'")
+
+    # validate that all video files exist
+    missing_files = []
+    for clip in clips:
+        filename = clip.get("filename")
+        if filename:
+            filepath = os.path.join(CLIPS_FOLDER, filename)
+            if not os.path.isfile(filepath):
+                missing_files.append({
+                    "filename": filename,
+                    "title": clip.get("title", "N/A"),
+                    "rank": clip.get("rank", "N/A")
+                })
+
+    if missing_files:
+        log.warning(f"⚠️  Found {len(missing_files)} missing video file(s) in clips.json:")
+        for item in missing_files:
+            log.warning(f"   - {item['filename']} (rank {item['rank']}, title: {item['title']})")
+
     return clips
 
 

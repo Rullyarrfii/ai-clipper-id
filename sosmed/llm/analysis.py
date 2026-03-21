@@ -80,29 +80,26 @@ def _build_user_prompt(
     return f"{header}\nTRANSKRIP:\n{transcript}"
 
 
-def _compute_clip_score(c: dict[str, Any]) -> int:
-    """Compute clip_score as weighted average tuned for TikTok virality.
-
-    Formula:
-            retention*0.35 + clarity*0.25 + educational*0.20 + hook*0.15 + shareability*0.05
-    """
+def _compute_clip_score(c: dict[str, Any]) -> float:
+    """Compute clip_score using the educational virality weighting."""
     scores = _normalize_score_fields(c)
     hook = scores["score_hook"]
+    insight_density = scores["score_insight_density"]
     retention = scores["score_retention"]
-    shareability = scores["score_shareability"]
-    educational = scores["score_educational"]
+    emotional_payoff = scores["score_emotional_payoff"]
     clarity = scores["score_clarity"]
 
-    total = hook + retention + shareability + educational + clarity
+    total = hook + insight_density + retention + emotional_payoff + clarity
     if total > 0:
         return round(
-            retention * 0.35
-            + clarity * 0.25
-            + educational * 0.20
-            + hook * 0.15
-            + shareability * 0.05
+            hook * 0.30
+            + insight_density * 0.25
+            + retention * 0.20
+            + emotional_payoff * 0.15
+            + clarity * 0.10,
+            1,
         )
-    return int(c.get("clip_score", 0) or c.get("engagement_score", 0) or 0)
+    return 0.0
 
 
 def _to_score(value: Any) -> int:
@@ -117,31 +114,18 @@ def _to_score(value: Any) -> int:
 def _normalize_score_fields(c: dict[str, Any]) -> dict[str, int]:
     """
     Normalize per-dimension score fields to keep output stable.
-
-    If the model returns only clip_score but omits all five dimensions,
-    backfill the five dimensions from clip_score to avoid all-zero metrics
-    in persisted clips.
     """
-    hook = _to_score(c.get("score_hook", c.get("score_energy", 0)))
-    retention = _to_score(c.get("score_retention", c.get("score_informative", 0)))
-    shareability = _to_score(c.get("score_shareability", c.get("score_newsworthy", 0)))
-    educational = _to_score(c.get("score_educational", c.get("score_entertainment", 0)))
-    clarity = _to_score(c.get("score_clarity", c.get("score_easy", 0)))
-
-    if hook + retention + shareability + educational + clarity == 0:
-        inferred = _to_score(c.get("clip_score", c.get("engagement_score", 0)))
-        if inferred > 0:
-            hook = inferred
-            retention = inferred
-            shareability = inferred
-            educational = inferred
-            clarity = inferred
+    hook = _to_score(c.get("score_hook", 0))
+    insight_density = _to_score(c.get("score_insight_density", 0))
+    retention = _to_score(c.get("score_retention", 0))
+    emotional_payoff = _to_score(c.get("score_emotional_payoff", 0))
+    clarity = _to_score(c.get("score_clarity", 0))
 
     return {
         "score_hook": hook,
+        "score_insight_density": insight_density,
         "score_retention": retention,
-        "score_shareability": shareability,
-        "score_educational": educational,
+        "score_emotional_payoff": emotional_payoff,
         "score_clarity": clarity,
     }
 
@@ -204,7 +188,6 @@ def _validate_clips(
         if score < min_score:
             continue  # strict score threshold — no leniency
         # Only enforce hook floor when score_hook is explicitly provided.
-        # Some model outputs omit score_hook but still provide enough signal in clip_score.
         hook_raw = c.get("score_hook")
         if hook_raw is not None:
             hook_score = int(hook_raw or 0)
@@ -231,8 +214,16 @@ def _validate_clips(
         c["clip_score"] = score
         c.pop("_score", None)
         c.pop("engagement_score", None)
-        # Remove legacy score fields if present
-        for legacy in ("score_easy", "score_informative", "score_energy", "score_newsworthy"):
+        # Remove score fields from older algorithms if present
+        for legacy in (
+            "score_shareability",
+            "score_educational",
+            "score_entertainment",
+            "score_easy",
+            "score_informative",
+            "score_energy",
+            "score_newsworthy",
+        ):
             c.pop(legacy, None)
         valid.append(c)
         if len(valid) >= max_clips:

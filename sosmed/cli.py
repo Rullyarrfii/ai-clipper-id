@@ -166,17 +166,17 @@ def main() -> None:
         print()
         
         # Summary table
-        print(f"{BOLD}{'#':<4} {'Score':<6} {'H/R/S/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+        print(f"{BOLD}{'#':<4} {'Score':<6} {'H/I/R/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
         print("─" * 90)
         for c in clips:
             d = c["end"] - c["start"]
             sh = c.get("score_hook", "?")
+            si = c.get("score_insight_density", "?")
             sr = c.get("score_retention", "?")
-            ss = c.get("score_shareability", "?")
-            se = c.get("score_entertainment", "?")
+            se = c.get("score_emotional_payoff", "?")
             sc = c.get("score_clarity", "?")
             print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
-                  f"{sh}/{sr}/{ss}/{se}/{sc}  "
+                  f"{sh}/{si}/{sr}/{se}/{sc}  "
                   f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
         print()
         
@@ -415,17 +415,17 @@ def main() -> None:
     log("OK", f"Metadata saved early → {meta}")
 
     # Summary table
-    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'H/R/S/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
+    print(f"\n{BOLD}{'#':<4} {'Score':<6} {'H/I/R/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
     print("─" * 90)
     for c in clips:
         d = c["end"] - c["start"]
         sh = c.get("score_hook", "?")
+        si = c.get("score_insight_density", "?")
         sr = c.get("score_retention", "?")
-        ss = c.get("score_shareability", "?")
-        se = c.get("score_entertainment", "?")
+        se = c.get("score_emotional_payoff", "?")
         sc = c.get("score_clarity", "?")
         print(f"  {c['rank']:<3} {c.get('clip_score', '?'):<6} "
-              f"{sh}/{sr}/{ss}/{se}/{sc}  "
+              f"{sh}/{si}/{sr}/{se}/{sc}  "
               f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
     print()
 

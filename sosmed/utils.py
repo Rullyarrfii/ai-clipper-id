@@ -364,6 +364,13 @@ score_hook — Stop-scroll power in the first 2 seconds
 30–49  | Context-setting before the point
 0–29   | Filler words, technical jargon opener, greeting
 
+score_insight_density — How many real insights per second?
+90–100 | Multiple concrete, memorable takeaways packed into a short clip
+70–89  | Strong practical insight with clear specificity
+50–69  | Some useful points but partially generic
+30–49  | Mostly setup with little new knowledge
+0–29   | No substantive insight
+
 score_retention — Will viewers watch to the end to learn?
 90–100 | <60s clip, clear step-by-step or cohesive explanation ending with a massive takeaway
 70–89  | Clean arc, moderate length, good insight delivery
@@ -371,19 +378,12 @@ score_retention — Will viewers watch to the end to learn?
 30–49  | Trails off, missing context, or rambling
 0–29   | No point made, pure ramble, cut mid-thought
 
-score_shareability — Would someone tag a friend or save for later?
-90–100 | "I need to save this for my project", highly actionable advice, paradigm-shifting insight
-70–89  | Broadly useful tip, good reminder
-50–69  | Interesting but very niche
-30–49  | Only makes sense mid-stream
-0–29   | No standalone value
-
-score_educational — How deep or valuable is the insight?
-90–100 | Mind-blowing "Aha!" moment, highly actionable, paradigm-shifting
-70–89  | Solid tip, very useful concept, clear practical value
-50–69  | Basic textbook fact, informative but surface-level
-30–49  | Vague, lacks concrete examples or depth
-0–29   | Rambling, off-topic, zero learning value
+score_emotional_payoff — Is there a surprise, wonder, or satisfying mental click?
+90–100 | Strong "Aha!" emotional hit that makes viewers want to share
+70–89  | Clear satisfying reveal or reframing moment
+50–69  | Mildly satisfying but not memorable
+30–49  | Informative but emotionally flat
+0–29   | No payoff moment
 
 score_clarity — Does it work without watching the full stream?
 90–100 | Fully self-contained action/insight
@@ -397,7 +397,7 @@ score_clarity — Does it work without watching the full stream?
 STEP 3 — CALCULATE clip_score
 Use this exact formula:
 
-clip_score = (score_retention × 0.35) + (score_clarity × 0.25) + (score_educational × 0.20) + (score_hook × 0.15) + (score_shareability × 0.05)
+clip_score = round((score_hook × 0.30) + (score_insight_density × 0.25) + (score_retention × 0.20) + (score_emotional_payoff × 0.15) + (score_clarity × 0.10), 1)
 
 ---
 
@@ -407,7 +407,6 @@ INCLUDE the clip only if ALL are true:
 - clip_score ≥ {min_score}
 - AND at least THREE individual scores ≥ 70
 - AND score_hook ≥ 60
-- AND score_clarity ≥ 70 (educational clips MUST be clear)
 
 DEDUPLICATE: If two clips cover the exact same moment or insight, keep only the one with the higher clip_score.
 

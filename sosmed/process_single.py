@@ -53,9 +53,9 @@ def _build_full_video_clip(
         "reason": "Single-video mode returns the full source video.",
         "hook": "",
         "score_hook": 0,
+        "score_insight_density": 0,
         "score_retention": 0,
-        "score_shareability": 0,
-        "score_entertainment": 0,
+        "score_emotional_payoff": 0,
         "score_clarity": 0,
         "clip_score": 0,
     }

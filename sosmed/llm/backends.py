@@ -74,12 +74,84 @@ def _parse_llm_json(raw: str) -> tuple[list[dict[str, Any]], bool]:
     Returns:
         (parsed_data, success) — success=False if parsing failed
     """
-    # Remove any thinking block that some reasoning models might output in content
+    # Remove any thinking block that some reasoning models might output in content.
     cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
-    
-    # Strip markdown code fences
+
+    # Strip markdown code fences.
     cleaned = re.sub(r"```(?:json)?", "", cleaned).strip().rstrip("`").strip()
-    # Try direct parse
+
+    def _extract_balanced_array(text: str) -> str | None:
+        """
+        Return first syntactically balanced JSON array substring if present.
+
+        Handles nested braces/brackets and quoted strings so bracket matching
+        does not break on user text like "]" inside JSON strings.
+        """
+        start = text.find("[")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        return None
+
+    def _parse_partial_array(text: str) -> list[dict[str, Any]]:
+        """
+        Parse as many dict items as possible from an array-like payload.
+
+        Useful when the model output is truncated near the end but still has
+        valid leading items. Returns [] when no object can be decoded.
+        """
+        arr = text.strip()
+        if not arr.startswith("["):
+            return []
+
+        # Work on the content after '['; allow missing closing ']'.
+        body = arr[1:]
+        decoder = json.JSONDecoder()
+        idx = 0
+        out: list[dict[str, Any]] = []
+
+        while idx < len(body):
+            # Skip delimiters and whitespace
+            while idx < len(body) and body[idx] in " \t\r\n,":
+                idx += 1
+            if idx >= len(body) or body[idx] == "]":
+                break
+
+            try:
+                item, next_idx = decoder.raw_decode(body, idx)
+            except json.JSONDecodeError:
+                # Cannot decode next element; keep already-decoded objects.
+                break
+
+            if isinstance(item, dict):
+                out.append(item)
+            idx = next_idx
+
+        return out
+
+    # Try direct parse first.
     try:
         data = json.loads(cleaned)
         if isinstance(data, list):
@@ -91,13 +163,22 @@ def _parse_llm_json(raw: str) -> tuple[list[dict[str, Any]], bool]:
         return [], True
     except json.JSONDecodeError:
         pass
-    # Last resort: find first [ ... ] block
-    m = re.search(r"\[.*\]", cleaned, re.DOTALL)
-    if m:
+    # Last resort 1: find first balanced [ ... ] block and parse it.
+    block = _extract_balanced_array(cleaned)
+    if block:
         try:
-            return json.loads(m.group()), True
+            data = json.loads(block)
+            if isinstance(data, list):
+                return data, True
         except json.JSONDecodeError:
             pass
+
+    # Last resort 2: salvage leading valid objects from a possibly truncated array.
+    partial = _parse_partial_array(cleaned)
+    if partial:
+        log("WARN", f"Recovered {len(partial)} clip(s) from partial JSON array output")
+        return partial, True
+
     return [], False
 
 
@@ -231,7 +312,7 @@ def openrouter(
                 preview = reasoning_text[:300].replace("\n", " ")
                 log("DEBUG", f"Reasoning trace ({len(reasoning_text)} chars): {preview}…")
 
-            # Some reasoning models (e.g. StepFun) place their final JSON
+            # Some reasoning models place their final JSON
             # answer inside the reasoning field and leave content empty, or
             # vice-versa.  We pick whichever field contains parseable JSON;
             # if both are non-empty we prefer content (the intended answer).
@@ -250,9 +331,12 @@ def openrouter(
                     log("DEBUG", "JSON found in reasoning field; using that as answer.")
                     return reasoning_text
 
-            # Return whatever we have (may be empty — _retry_on_rate_limit
-            # will handle the retry loop if truly empty).
-            return content or reasoning_text
+            # Never return non-JSON reasoning text as answer payload.
+            # If content is empty and reasoning has no JSON, return empty so
+            # retry logic can issue a fresh request.
+            if content:
+                return content
+            return ""
 
         return _retry_on_rate_limit(api_call, max_retries=5, initial_wait=2.0)
 

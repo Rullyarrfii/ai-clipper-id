@@ -134,8 +134,8 @@ def _translate_to_indonesian(
                 key = (round(orig_clip.get("start", 0), 2), round(orig_clip.get("end", 0), 2))
                 if key in result_map:
                     trans_clip = result_map[key]
-                    # Update translatable fields (title is intentionally excluded)
-                    for field in ["topic", "caption", "hook"]:
+                    # Update translatable fields
+                    for field in ["title", "topic", "caption", "hook"]:
                         if field in trans_clip:
                             orig_clip[field] = trans_clip[field]
                     matched_count += 1
@@ -226,16 +226,19 @@ def _improve_and_deduplicate(
                     orig = orig_map[key]
                     # Merge: keep all original fields, update with improved content fields
                     merged = orig.copy()
-                    for field in ["topic", "caption", "hook"]:
+                    for field in ["title", "topic", "caption", "hook"]:
                         if field in improved_clip:
                             merged[field] = improved_clip[field]
-                    # Ensure rank is recalculated
-                    merged["rank"] = len(deduplicated) + 1
                     deduplicated.append(merged)
                 else:
                     # If not found in originals, use as-is (LLM may have created new clips)
                     deduplicated.append(improved_clip)
-            
+
+            # Renumber ranks sequentially after deduplication
+            # (LLM dedup may remove clips, leaving gaps in original numbering)
+            for i, c in enumerate(deduplicated, 1):
+                c["rank"] = i
+
             return deduplicated
         else:
             log("WARN", "Improve-deduplicate LLM did not return structured list")

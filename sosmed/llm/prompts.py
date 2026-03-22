@@ -87,19 +87,24 @@ Requirements:
 - Return clips with refined titles, captions, and topics
 
 Return ONLY a valid JSON array of deduplicated and improved clips, no other text.""",
-    "Translate Subtitle Phrases": """Given subtitle phrases in JSON format, translate each phrase to Indonesian (Bahasa Indonesia).
+    "Translate Subtitle Phrases": """Given subtitle phrases in JSON format, translate each phrase to Indonesian (Bahasa Indonesia) AND add proper punctuation.
 
 Input format: [{"id": 0, "text": "some phrase", "start": 0.5, "end": 2.0}, ...]
 
 Rules:
-- Translate ONLY the "text" field to Indonesian
-- Keep "id", "start", "end" fields exactly unchanged
-- If text is already in Indonesian, keep it unchanged
-- Maintain natural conversational Indonesian
-- Keep the exact same number of items in the output array
+- Translate the "text" field to Indonesian. If text is already in Indonesian, keep it unchanged.
+- Add natural punctuation: periods (.), commas (,), question marks (?), exclamation marks (!) as appropriate for spoken content.
+- Keep the word count roughly the same — punctuation marks are fine but do NOT add or remove words.
+- Keep "id", "start", "end" fields exactly unchanged.
+- Maintain natural conversational Indonesian.
+- Keep the exact same number of items in the output array.
 
-Return ONLY valid JSON array with translated phrases, no other text.""",
-}
+Example:
+Input:  [{"id": 0, "text": "oh itu menarik sekali", "start": 0.0, "end": 1.5}]
+Output: [{"id": 0, "text": "Oh, itu menarik sekali.", "start": 0.0, "end": 1.5}]
+
+Return ONLY a JSON array with the exact same structure.
+""",}
 
 
 def get_prompt(section_name: str) -> str:

@@ -30,6 +30,27 @@ def _get_transcript_cache_path(video_path: str) -> Path:
     return cache_file
 
 
+def _make_clip_filename(clip: dict) -> str:
+    """Generate clip filename matching the postprocess naming convention.
+    Matches the pattern: rank{rank:02d}_{safe_title}_final.mp4
+    """
+    rank = clip.get("rank", 0)
+    safe = re.sub(r"[^\w\s-]", "", clip.get("title", f"clip_{rank}"))
+    safe = re.sub(r"\s+", "_", safe)[:50]
+    return f"rank{rank:02d}_{safe}_final.mp4"
+
+
+def _ensure_filenames(clips_list: list[dict]) -> bool:
+    """Ensure every clip dict has a ``filename`` key. Returns True if any changes made."""
+    changed = False
+    for c in clips_list:
+        expected = _make_clip_filename(c)
+        if c.get("filename") != expected:
+            c["filename"] = expected
+            changed = True
+    return changed
+
+
 def main() -> None:
     """Main CLI entry point."""
     ap = argparse.ArgumentParser(
@@ -109,25 +130,6 @@ def main() -> None:
     args = ap.parse_args()
     lang = None if args.lang.lower() == "none" else args.lang
     video = Path(args.video)
-
-    # helper to compute a safe clip filename (post-processed)
-    def _make_clip_filename(clip: dict) -> str:
-        # mimic postprocess naming: take raw stem (rankXX_title) and add _final.mp4
-        # generate safe title if necessary
-        rank = clip.get("rank", 0)
-        safe = re.sub(r"[^\w\s-]", "", clip.get("title", f"clip_{rank}"))
-        safe = re.sub(r"\s+", "_", safe)[:50]
-        return f"rank{rank:02d}_{safe}_final.mp4"
-
-    def _ensure_filenames(clips_list: list[dict]) -> bool:
-        """Ensure every clip dict has a ``filename`` key. Returns True if any changes made."""
-        changed = False
-        for c in clips_list:
-            if "filename" not in c or not c["filename"]:
-                c["filename"] = _make_clip_filename(c)
-                changed = True
-        return changed
-
 
     # ── Example mode: skip to extraction ─────────────────────────────────
     if args.example:
@@ -408,6 +410,9 @@ def main() -> None:
             api_key=args.api_key,
             detected_language=detected_language,
         )
+        # Re-sync filenames in case title/topic changed during improvement
+        # (e.g. Indonesian translation, deduplication renames)
+        _ensure_filenames(clips)
         log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
     # 💾 Save metadata early (~as soon as we have final clip information)

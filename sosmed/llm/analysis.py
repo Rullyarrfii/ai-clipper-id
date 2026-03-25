@@ -217,11 +217,17 @@ def _validate_clips(
         score = c["_score"]
         if score < min_score:
             continue  # strict score threshold — no leniency
-        # Normalize score fields early so we can check hook threshold on normalized value
+        # Normalize score fields for output and optional hook-floor enforcement.
+        # Some models return only clip_score without per-dimension fields.
+        # In that case, do not hard-reject on missing hook dimension.
         normalized = _normalize_score_fields(c)
         hook_score = normalized["score_hook"]
-        if hook_score < 60:
-            continue  # enforce hook floor (stop-scroll power is critical)
+        has_hook_signal = any(
+            c.get(field) is not None
+            for field in ("score_hook", "score_newsworthy", "score_shareability")
+        )
+        if has_hook_signal and hook_score < 60:
+            continue  # enforce hook floor only when hook dimension is provided
         # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))

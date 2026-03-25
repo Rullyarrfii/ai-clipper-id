@@ -352,6 +352,7 @@ def main() -> None:
     # Check if clips.json already exists (cached from previous run)
     output_dir.mkdir(parents=True, exist_ok=True)
     clips_cache_file = output_dir / "clips.json"
+    raw_clips_cache_file = output_dir / ".clips_raw.json"
     clips_from_cache = False
     
     if clips_cache_file.exists():
@@ -377,6 +378,7 @@ def main() -> None:
             video_duration=video_dur,
             chunk_duration=args.chunk_duration,
             chunk_overlap=args.chunk_overlap,
+            raw_clips_cache_file=raw_clips_cache_file,
         )
         # ensure metadata has filenames for new clips
         _ensure_filenames(clips)

@@ -404,8 +404,7 @@ STEP 4 — SELECTION RULES
 
 INCLUDE the clip if ALL are true:
 - clip_score ≥ {min_score}
-- AND at least TWO individual scores ≥ 60
-- AND score_hook ≥ 45
+- AND at least TWO individual scores ≥ 50
 
 Be generous — when in doubt, include the clip. It is better to have more candidates than to miss a potential viral hit.
 

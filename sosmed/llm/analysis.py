@@ -2,8 +2,10 @@
 LLM analysis: find engaging clips in transcript.
 """
 
+import json
 import math
 import re
+from pathlib import Path
 from typing import Any
 
 from ..utils import log, SYSTEM_PROMPT, MAX_CLIPS_HARD_LIMIT
@@ -81,13 +83,30 @@ def _build_user_prompt(
 
 
 def _compute_clip_score(c: dict[str, Any]) -> float:
-    """Compute clip_score using the educational virality weighting."""
+    """
+    Compute clip_score using the educational virality weighting.
+    
+    If the clip has an existing valid clip_score and all new dimension scores 
+    are missing (legacy format), preserve the original score.
+    """
     scores = _normalize_score_fields(c)
     hook = scores["score_hook"]
     insight_density = scores["score_insight_density"]
     retention = scores["score_retention"]
     emotional_payoff = scores["score_emotional_payoff"]
     clarity = scores["score_clarity"]
+
+    # If all new scores ended up coming from legacy mapping and original clip_score exists,
+    # prefer the original (legacy format clips)
+    has_original_score = "clip_score" in c and isinstance(c.get("clip_score"), (int, float))
+    has_new_fields = any(c.get(f) is not None for f in [
+        "score_hook", "score_insight_density", "score_retention", 
+        "score_emotional_payoff", "score_clarity"
+    ])
+    
+    if has_original_score and not has_new_fields and c["clip_score"] > 0:
+        # Legacy format clip with original score - return it
+        return float(c["clip_score"])
 
     total = hook + insight_density + retention + emotional_payoff + clarity
     if total > 0:
@@ -114,12 +133,23 @@ def _to_score(value: Any) -> int:
 def _normalize_score_fields(c: dict[str, Any]) -> dict[str, int]:
     """
     Normalize per-dimension score fields to keep output stable.
+    Falls back to legacy score fields if new ones are missing.
     """
-    hook = _to_score(c.get("score_hook", 0))
-    insight_density = _to_score(c.get("score_insight_density", 0))
-    retention = _to_score(c.get("score_retention", 0))
-    emotional_payoff = _to_score(c.get("score_emotional_payoff", 0))
-    clarity = _to_score(c.get("score_clarity", 0))
+    # Try new field names first
+    hook = _to_score(c.get("score_hook"))
+    insight_density = _to_score(c.get("score_insight_density"))
+    retention = _to_score(c.get("score_retention"))
+    emotional_payoff = _to_score(c.get("score_emotional_payoff"))
+    clarity = _to_score(c.get("score_clarity"))
+    
+    # If all new fields are missing, try legacy fields
+    if hook == 0 and insight_density == 0 and retention == 0 and emotional_payoff == 0 and clarity == 0:
+        # Map legacy fields to new ones
+        hook = _to_score(c.get("score_newsworthy", c.get("score_shareability", 0)))  # newsworthy acts as hook
+        insight_density = _to_score(c.get("score_informative", c.get("score_educational", 0)))
+        retention = _to_score(c.get("score_energy", 0))  # energy acts as retention
+        emotional_payoff = _to_score(c.get("score_entertainment", 0))
+        clarity = _to_score(c.get("score_easy", 0))
 
     return {
         "score_hook": hook,
@@ -187,12 +217,8 @@ def _validate_clips(
         score = c["_score"]
         if score < min_score:
             continue  # strict score threshold — no leniency
-        # Only enforce hook floor when score_hook is explicitly provided.
-        hook_raw = c.get("score_hook")
-        if hook_raw is not None:
-            hook_score = int(hook_raw or 0)
-            if hook_score < 45:
-                continue  # minimum hook threshold for viral potential
+        # Normalize score fields for output (no hard hook floor — clip_score weighting handles quality).
+        normalized = _normalize_score_fields(c)
         # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))
@@ -210,7 +236,7 @@ def _validate_clips(
         c.setdefault("caption", "")
         c.setdefault("reason", "")
         c.setdefault("hook", "")
-        c.update(_normalize_score_fields(c))
+        c.update(normalized)
         c["clip_score"] = score
         c.pop("_score", None)
         c.pop("engagement_score", None)
@@ -338,6 +364,7 @@ def find_clips(
     video_duration: float | None = None,
     chunk_duration: float = 480.0,
     chunk_overlap: float = 60.0,
+    raw_clips_cache_file: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """
     Ask LLM to find ALL engaging clips (up to *max_clips*).
@@ -348,50 +375,78 @@ def find_clips(
 
     After the first pass, identifies large gaps (uncovered time ranges)
     and does a second LLM pass to extract additional clips from those gaps.
+    
+    If raw_clips_cache_file is provided and exists, loads cached raw LLM results
+    instead of calling LLM again.
     """
-    # Split into chunks for iterative processing
-    chunks = _chunk_segments(segments, chunk_duration, chunk_overlap)
+    if raw_clips_cache_file:
+        raw_clips_cache_file = Path(raw_clips_cache_file)
+        if raw_clips_cache_file.exists():
+            log("INFO", f"Loading cached raw LLM clips from {raw_clips_cache_file}")
+            all_raw_clips = json.loads(raw_clips_cache_file.read_text())
+            log("OK", f"Loaded {len(all_raw_clips)} raw clips from cache (skipped LLM calls)")
+        else:
+            # Will generate and cache below
+            all_raw_clips = None
+    else:
+        all_raw_clips = None
+    
+    # If not cached, call LLM
+    if all_raw_clips is None:
+        # Split into chunks for iterative processing
+        chunks = _chunk_segments(segments, chunk_duration, chunk_overlap)
 
-    system = SYSTEM_PROMPT.format(
-        min_dur=min_duration,
-        max_dur=max_duration,
-        max_clips=max_clips,
-        min_score=min_score,
-    )
-
-    all_raw_clips: list[dict[str, Any]] = []
-    n_chunks = len(chunks)
-
-    for idx, chunk in enumerate(chunks, 1):
-        chunk_start = chunk[0]["start"]
-        chunk_end = chunk[-1]["end"]
-        # Generous per-chunk budget — maximize output
-        clips_per_chunk = max(10, math.ceil(max_clips / max(n_chunks, 1) * 1.5))
-        clips_per_chunk = min(clips_per_chunk, max_clips)
-
-        transcript = _build_transcript_text(chunk)
-        chunk_info = ""
-        if n_chunks > 1:
-            chunk_info = (
-                f"Ini bagian {idx}/{n_chunks} video "
-                f"({chunk_start:.0f}s-{chunk_end:.0f}s). "
-                f"Ekstrak SEMUA momen menarik di bagian ini — setiap subtopik yang layak harus jadi klip."
-            )
-            log("INFO", f"Chunk {idx}/{n_chunks}: {chunk_start:.0f}s → {chunk_end:.0f}s "
-                       f"({len(chunk)} segments, asking for ≤{clips_per_chunk} clips)")
-
-        user = _build_user_prompt(
-            transcript, min_duration, max_duration,
-            clips_per_chunk, min_score, chunk_info,
+        system = SYSTEM_PROMPT.format(
+            min_dur=min_duration,
+            max_dur=max_duration,
+            max_clips=max_clips,
+            min_score=min_score,
         )
 
-        raw_clips = call_llm(system, user, api_key, llm_model)
-        log("OK", f"Chunk {idx}/{n_chunks}: LLM returned {len(raw_clips)} clips")
-        all_raw_clips.extend(raw_clips)
+        all_raw_clips = []
+        n_chunks = len(chunks)
 
-    log("INFO", f"Total raw clips from {n_chunks} chunk(s): {len(all_raw_clips)}")
+        for idx, chunk in enumerate(chunks, 1):
+            chunk_start = chunk[0]["start"]
+            chunk_end = chunk[-1]["end"]
+            # Generous per-chunk budget — maximize output
+            clips_per_chunk = max(10, math.ceil(max_clips / max(n_chunks, 1) * 1.5))
+            clips_per_chunk = min(clips_per_chunk, max_clips)
+
+            transcript = _build_transcript_text(chunk)
+            chunk_info = ""
+            if n_chunks > 1:
+                chunk_info = (
+                    f"Ini bagian {idx}/{n_chunks} video "
+                    f"({chunk_start:.0f}s-{chunk_end:.0f}s). "
+                    f"Ekstrak SEMUA momen menarik di bagian ini — setiap subtopik yang layak harus jadi klip."
+                )
+                log("INFO", f"Chunk {idx}/{n_chunks}: {chunk_start:.0f}s → {chunk_end:.0f}s "
+                           f"({len(chunk)} segments, asking for ≤{clips_per_chunk} clips)")
+
+            user = _build_user_prompt(
+                transcript, min_duration, max_duration,
+                clips_per_chunk, min_score, chunk_info,
+            )
+
+            raw_clips = call_llm(system, user, api_key, llm_model)
+            log("OK", f"Chunk {idx}/{n_chunks}: LLM returned {len(raw_clips)} clips")
+            all_raw_clips.extend(raw_clips)
+
+        log("INFO", f"Total raw clips from {n_chunks} chunk(s): {len(all_raw_clips)}")
+        
+        # Cache raw results for future runs
+        if raw_clips_cache_file:
+            raw_clips_cache_file = Path(raw_clips_cache_file)
+            raw_clips_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            raw_clips_cache_file.write_text(json.dumps(all_raw_clips, indent=2, ensure_ascii=False))
+            log("OK", f"Cached {len(all_raw_clips)} raw LLM clips → {raw_clips_cache_file}")
 
     # Merge, deduplicate, and validate across all chunks
+    # Determine number of chunks from segments (for merge logic)
+    chunks_for_merge = _chunk_segments(segments, chunk_duration, chunk_overlap)
+    n_chunks = len(chunks_for_merge)
+    
     if n_chunks > 1:
         clips = _merge_chunk_clips(
             all_raw_clips, min_duration, max_duration,

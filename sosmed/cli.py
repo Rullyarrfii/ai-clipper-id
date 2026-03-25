@@ -195,12 +195,14 @@ def main() -> None:
         
         # In example mode, prefer cached transcript for real word timestamps
         cache_path = _get_transcript_cache_path(str(video))
+        detected_language = {"language": "unknown", "language_probability": 0.0}
         if cache_path.exists():
             log("INFO", f"Loading cached transcript from {cache_path}")
             cache_data = json.loads(cache_path.read_text())
             # Handle both old format (list) and new format (dict with segments and language_info)
             if isinstance(cache_data, dict) and "segments" in cache_data:
                 segments = cache_data["segments"]
+                detected_language = cache_data.get("language_info", detected_language)
             else:
                 segments = cache_data  # Old format, just a list
             log("OK", f"Loaded {len(segments)} segments from cache")
@@ -225,9 +227,14 @@ def main() -> None:
         # ── Post-process ────────────────────────────────────────────────
         # Prepare subtitles: translate words to Indonesian for each clip
         if args.subtitles and segments:
-            log("INFO", "Translating subtitle words to Indonesian for all clips...")
             from .subtitles import get_clip_words
-            from .llm import translate_subtitle_words
+            from .process_single import _should_translate_to_indonesian
+            need_translate = _should_translate_to_indonesian(detected_language)
+            if need_translate:
+                log("INFO", "Translating subtitle words to Indonesian for all clips...")
+                from .llm import translate_subtitle_words
+            else:
+                log("INFO", "Skipping subtitle translation (detected Indonesian audio)")
             for clip in clips:
                 try:
                     raw_words = get_clip_words(
@@ -235,15 +242,18 @@ def main() -> None:
                         clip_start=clip["start"],
                         clip_end=clip["end"],
                     )
-                    clip["_subtitle_words"] = translate_subtitle_words(
-                        raw_words,
-                        llm_model=args.llm_model,
-                        api_key=args.api_key,
-                    )
+                    if need_translate:
+                        clip["_subtitle_words"] = translate_subtitle_words(
+                            raw_words,
+                            llm_model=args.llm_model,
+                            api_key=args.api_key,
+                        )
+                    else:
+                        clip["_subtitle_words"] = raw_words
                 except Exception as e:
                     log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
                     clip["_subtitle_words"] = []
-        
+
         any_postprocess = args.subtitles
         if any_postprocess and raw_outputs:
             outputs = postprocess_clips(
@@ -458,9 +468,14 @@ def main() -> None:
 
     # ── 5. Prepare subtitles: translate words to Indonesian for each clip
     if args.subtitles and segments:
-        log("INFO", "Translating subtitle words to Indonesian for all clips...")
         from .subtitles import get_clip_words
-        from .llm import translate_subtitle_words
+        from .process_single import _should_translate_to_indonesian
+        need_translate = _should_translate_to_indonesian(detected_language)
+        if need_translate:
+            log("INFO", "Translating subtitle words to Indonesian for all clips...")
+            from .llm import translate_subtitle_words
+        else:
+            log("INFO", "Skipping subtitle translation (detected Indonesian audio)")
         for clip in clips:
             try:
                 raw_words = get_clip_words(
@@ -468,11 +483,14 @@ def main() -> None:
                     clip_start=clip["start"],
                     clip_end=clip["end"],
                 )
-                clip["_subtitle_words"] = translate_subtitle_words(
-                    raw_words,
-                    llm_model=args.llm_model,
-                    api_key=args.api_key,
-                )
+                if need_translate:
+                    clip["_subtitle_words"] = translate_subtitle_words(
+                        raw_words,
+                        llm_model=args.llm_model,
+                        api_key=args.api_key,
+                    )
+                else:
+                    clip["_subtitle_words"] = raw_words
             except Exception as e:
                 log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
                 clip["_subtitle_words"] = []

@@ -342,6 +342,8 @@ You are a viral social media content expert. Your goal is to extract clips with 
 Viral clips can be: funny, shocking, emotional, surprising, relatable, inspirational, controversial, or educational. Cast a wide net — extract EVERY clip that could make someone stop scrolling, watch to the end, or share with a friend.
 Clip duration: {min_dur}–{max_dur} seconds. Maximum {max_clips} clips. Output JSON array only — no explanation, no markdown fence.
 
+IMPORTANT — LANGUAGE: ALL text fields (topic, reason, hook, caption, title) MUST be written in Bahasa Indonesia. Match the language of the transcript. Do NOT write these fields in English.
+
 ---
 
 STEP 1 — FILTER OUT IMMEDIATELY (do not score these)
@@ -433,9 +435,27 @@ STEP 5 — GENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
 
 STEP 6 — OUTPUT FORMAT
 
-Return a JSON array:
-- All original fields preserved
-- Rewritten fields replace original values entirely (topic, reason, hook, caption, title)
-- Sorted by clip_score descending
-- No new fields added, no fields removed
+Return a JSON array sorted by clip_score descending. Each object MUST have ALL of these fields:
+
+```json
+[
+  {{
+    "start": 34.5,
+    "end": 83.2,
+    "topic": "...",
+    "reason": "...",
+    "hook": "...",
+    "caption": "...",
+    "title": "...",
+    "score_hook": 85,
+    "score_insight_density": 78,
+    "score_retention": 72,
+    "score_emotional_payoff": 65,
+    "score_clarity": 90,
+    "clip_score": 78.4
+  }}
+]
+```
+
+CRITICAL: Every clip MUST include start, end, ALL five score_* fields (integers 0-100), and clip_score (float). Clips missing scores will be discarded.
 """

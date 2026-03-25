@@ -100,10 +100,10 @@ def _compute_clip_score(c: dict[str, Any]) -> float:
     # prefer the original (legacy format clips)
     has_original_score = "clip_score" in c and isinstance(c.get("clip_score"), (int, float))
     has_new_fields = any(c.get(f) is not None for f in [
-        "score_hook", "score_insight_density", "score_retention", 
+        "score_hook", "score_insight_density", "score_retention",
         "score_emotional_payoff", "score_clarity"
     ])
-    
+
     if has_original_score and not has_new_fields and c["clip_score"] > 0:
         # Legacy format clip with original score - return it
         return float(c["clip_score"])
@@ -118,7 +118,10 @@ def _compute_clip_score(c: dict[str, Any]) -> float:
             + clarity * 0.10,
             1,
         )
-    return 0.0
+
+    # No scores at all — the LLM returned this clip without scoring fields.
+    # The LLM chose it, so assign a default passing score.
+    return 70.0
 
 
 def _to_score(value: Any) -> int:
@@ -210,13 +213,17 @@ def _validate_clips(
     for c in scored_clips:
         s, e = float(c["start"]), float(c["end"])
         dur = e - s
+        title = c.get("title", "?")
         if dur < min_dur or dur > max_dur:
-            continue  # strict duration enforcement — no tolerance
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: duration {dur:.0f}s outside {min_dur}-{max_dur}s")
+            continue
         if video_duration and e > video_duration + 2:
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: end exceeds video duration {video_duration:.0f}s")
             continue
         score = c["_score"]
         if score < min_score:
-            continue  # strict score threshold — no leniency
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: score {score:.1f} < {min_score}")
+            continue
         # Normalize score fields for output (no hard hook floor — clip_score weighting handles quality).
         normalized = _normalize_score_fields(c)
         # Lenient overlap check

@@ -5,7 +5,6 @@ Segment pre-filtering: removes noise, duplicates, and low-value segments.
 import re
 from typing import Any
 
-from .utils import FILLER_RE
 
 
 def _wps(seg: dict[str, Any]) -> float:
@@ -76,20 +75,20 @@ def _is_likely_music(txt: str, no_speech_prob: float) -> bool:
 def prefilter_segments(
     segments: list[dict[str, Any]],
     *,
-    min_words: int = 3,
-    min_duration: float = 0.5,
-    max_no_speech: float = 0.7,
-    min_wps: float = 0.3,
-    max_wps: float = 12.0,
-    dup_threshold: float = 0.85,
+    min_words: int = 1,
+    min_duration: float = 0.3,
+    max_no_speech: float = 0.9,
+    min_wps: float = 0.1,
+    max_wps: float = 15.0,
+    dup_threshold: float = 0.95,
     merge_gap: float = 1.0,
+    max_merge_duration: float = 60.0,
     filter_music: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Filter low-value segments before LLM analysis.
-
-    Filters: too-short, too-few-words, high no-speech, pure filler,
-    abnormal speech rate, near-duplicate, music/lyrics. Then merges close neighbours.
+    Light pre-filter: only removes obvious noise (music markers, exact
+    duplicates, hallucinated speech rates). Keeps fillers, short words, etc.
+    so the LLM has full context.
     """
     kept: list[dict[str, Any]] = []
     reasons: dict[str, int] = {}
@@ -112,7 +111,7 @@ def prefilter_segments(
         if nsp > max_no_speech:         _drop("no_speech"); continue
         if filter_music and _is_likely_music(txt, nsp):
             _drop("music"); continue
-        if FILLER_RE.match(txt):        _drop("filler"); continue
+        # NOTE: filler words are NOT filtered — they provide context for the LLM
         if wps < min_wps:               _drop("slow_speech"); continue
         if wps > max_wps:               _drop("hallucination"); continue
         if any(_jaccard(txt, p) >= dup_threshold for p in seen[-12:]):
@@ -121,10 +120,14 @@ def prefilter_segments(
         seen.append(txt)
         kept.append(seg)
 
-    # Merge adjacent segments separated by tiny gaps
+    # Merge adjacent segments separated by tiny gaps, but cap merged size
     merged: list[dict[str, Any]] = []
     for seg in kept:
-        if merged and (seg["start"] - merged[-1]["end"]) <= merge_gap:
+        if (
+            merged
+            and (seg["start"] - merged[-1]["end"]) <= merge_gap
+            and (seg["end"] - merged[-1]["start"]) <= max_merge_duration
+        ):
             prev = merged[-1]
             prev["end"] = seg["end"]
             prev["text"] += " " + seg["text"]
@@ -132,10 +135,13 @@ def prefilter_segments(
         else:
             merged.append(dict(seg))
 
+    n_merged = len(kept) - len(merged)
     stats: dict[str, Any] = {
         "original": len(segments),
+        "after_filter": len(kept),
         "kept": len(merged),
         "dropped": n_dropped,
+        "merged": n_merged,
         "drop_pct": f"{n_dropped / len(segments) * 100:.1f}%" if segments else "0%",
         "reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
     }

@@ -338,8 +338,9 @@ def main() -> None:
     filtered, stats = prefilter_segments(segments)
 
     print(f"\n{BOLD}Pre-filter:{RESET}")
-    print(f"  {stats['original']} → {stats['kept']} segments "
-          f"({stats['dropped']} dropped, {stats['drop_pct']})")
+    print(f"  {stats['original']} → {stats['after_filter']} after filter "
+          f"({stats['dropped']} dropped, {stats['drop_pct']})"
+          f" → {stats['kept']} after merge ({stats['merged']} merged)")
     if stats["reasons"]:
         print(f"  Reasons: {', '.join(f'{k}={v}' for k, v in stats['reasons'].items())}")
     print()

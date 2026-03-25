@@ -18,7 +18,7 @@ def _retry_on_rate_limit(
     initial_wait: float = 2.0,
 ) -> str:
     """
-    Retry API call on rate limit errors or empty responses with exponential backoff.
+    Retry API call on rate limits, transient provider errors, or empty responses.
     
     Args:
         api_call_fn: Callable that makes the API call (no args)
@@ -28,8 +28,10 @@ def _retry_on_rate_limit(
     Returns:
         Response text from successful API call
         
-    Raises:
-        Exception: If all retries fail
+    Notes:
+        Non-retriable errors are raised immediately. Persistent retriable
+        failures return an empty string so higher-level JSON handling can
+        decide whether to retry with prompt constraints or continue.
     """
     for attempt in range(max_retries):
         try:
@@ -47,24 +49,52 @@ def _retry_on_rate_limit(
                 log("ERROR", f"Empty response after {max_retries} retries")
                 return ""
         except Exception as e:
-            # Check for rate limit error (429)
+            err_text = str(e)
+            err_lower = err_text.lower()
+            err_type = type(e).__name__
+
+            # 1) Explicit rate-limit detection (429 / SDK RateLimitError).
             is_rate_limit = (
-                "429" in str(e) or 
-                "RateLimitError" in type(e).__name__ or
-                "rate" in str(e).lower()
+                "429" in err_text
+                or "RateLimitError" in err_type
+                or "rate limit" in err_lower
             )
-            
-            if not is_rate_limit:
-                # Not a rate limit error, re-raise immediately
+
+            # 2) Transient upstream/transport parse failures.
+            # OpenRouter (via OpenAI SDK) may occasionally return a non-JSON body
+            # during provider hiccups, which surfaces as JSONDecodeError.
+            is_transient = isinstance(e, json.JSONDecodeError) or any(
+                marker in err_lower
+                for marker in (
+                    "expecting value",
+                    "line 1 column 1",
+                    "bad gateway",
+                    "service unavailable",
+                    "gateway timeout",
+                    "502",
+                    "503",
+                    "504",
+                    "api connection error",
+                    "connection reset",
+                    "timed out",
+                )
+            )
+
+            if not (is_rate_limit or is_transient):
+                # Non-retriable error; preserve existing behavior.
                 raise
-            
+
             if attempt < max_retries - 1:
                 wait_time = initial_wait * (2 ** attempt)
-                log("WARN", f"Rate limited (429). Retry {attempt + 1}/{max_retries} in {wait_time:.1f}s...")
+                reason = "Rate limited (429)" if is_rate_limit else "Transient API error"
+                log("WARN", f"{reason}. Retry {attempt + 1}/{max_retries} in {wait_time:.1f}s...")
                 time.sleep(wait_time)
             else:
-                log("ERROR", f"Rate limit persisted after {max_retries} retries")
-                raise
+                # Do not hard-crash the whole pipeline on persistent transient provider failures.
+                # Returning empty string lets JSON retry logic log raw failure and continue.
+                reason = "Rate limit" if is_rate_limit else "Transient API error"
+                log("ERROR", f"{reason} persisted after {max_retries} retries")
+                return ""
 
 
 def _parse_llm_json(raw: str) -> tuple[list[dict[str, Any]], bool]:

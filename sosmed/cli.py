@@ -75,8 +75,8 @@ def main() -> None:
                          "or None for auto-detect (default: id)")
     ap.add_argument("--min", type=int, default=15,
                     help="Min clip duration in seconds (default: 15)")
-    ap.add_argument("--max", type=int, default=60,
-                    help="Max clip duration in seconds (default: 60)")
+    ap.add_argument("--max", type=int, default=180,
+                    help="Max clip duration in seconds (default: 180)")
     ap.add_argument("--max-clips", type=int, default=MAX_CLIPS_HARD_LIMIT,
                     help=f"Maximum number of clips (default: {MAX_CLIPS_HARD_LIMIT})")
     ap.add_argument("--min-score", type=int, default=55,

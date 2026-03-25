@@ -160,7 +160,8 @@ def _parse_llm_json(raw: str) -> tuple[list[dict[str, Any]], bool]:
         for v in data.values():
             if isinstance(v, list):
                 return v, True
-        return [], True
+        # Dict with no array value — parsing failed (triggers retry)
+        return [], False
     except json.JSONDecodeError:
         pass
     # Last resort 1: find first balanced [ ... ] block and parse it.
@@ -430,7 +431,6 @@ def openai(system: str, user: str, api_key: str) -> list[dict[str, Any]]:
             client = OpenAI(api_key=api_key)
             resp = client.chat.completions.create(
                 model="gpt-4o",
-                response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt},

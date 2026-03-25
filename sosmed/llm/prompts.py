@@ -69,24 +69,20 @@ Return ONLY valid JSON array with fixed clips, no other text.""",
    - Ensure topics are clear categories or themes
    - Strengthen hooks for maximum stop-scroll potential
 
-2. Deduplicate by topic:
-   - Group clips by similar topics
-   - For each group, keep ONLY the highest-scoring clip (by clip_score)
-   - Discard duplicates with similar topics but lower scores
+2. Deduplicate only near-identical clips:
+   - Only remove a clip if another clip covers the EXACT same moment or statement (not just the same broad theme)
+   - Different clips covering similar topics from different angles are NOT duplicates — keep all of them
+   - When forced to choose between near-identical clips, keep the one with the higher clip_score
+   - Be conservative: when in doubt, keep the clip
 
-3. Filter out undesirable clips:
-   - Remove: webinar filler (opening statements, closing remarks, Q&A preambles, generic welcomes)
-   - Remove: low-value clips with clip_score < 50
-   - Keep: substantive content clips
+3. Filter out only truly dead-weight clips:
+   - Remove ONLY: pure opening/closing remarks with zero standalone value (e.g. "Welcome everyone, let's get started")
+   - Remove ONLY: clips with clip_score < 40
+   - Keep everything else — including Q&A, opinions, stories, tangents
 
 4. Re-rank remaining clips by clip_score (highest first)
 
-Requirements:
-- Each topic should appear only once in final output
-- For kept clips, consolidate topic names to be clear and marketable
-- Return clips with refined titles, captions, and topics
-
-Return ONLY a valid JSON array of deduplicated and improved clips, no other text.""",
+Return ONLY a valid JSON array of the kept and improved clips, no other text.""",
     "Translate Subtitle Phrases": """Given subtitle phrases in JSON format, translate each phrase to Indonesian (Bahasa Indonesia) AND add proper punctuation.
 
 Input format: [{"id": 0, "text": "some phrase", "start": 0.5, "end": 2.0}, ...]

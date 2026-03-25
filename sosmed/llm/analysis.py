@@ -191,8 +191,8 @@ def _validate_clips(
         hook_raw = c.get("score_hook")
         if hook_raw is not None:
             hook_score = int(hook_raw or 0)
-            if hook_score < 60:
-                continue  # lower hook threshold for education
+            if hook_score < 45:
+                continue  # minimum hook threshold for viral potential
         # Lenient overlap check
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))

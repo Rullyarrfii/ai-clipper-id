@@ -228,7 +228,7 @@ def tighten_clip_boundaries(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━ CONSTANTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Default free model on OpenRouter
-DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+DEFAULT_OPENROUTER_MODEL = "arcee-ai/trinity-large-preview:free"
 DEFAULT_OPENROUTER_BASE  = "https://openrouter.ai/api/v1"
 
 MAX_CLIPS_HARD_LIMIT = 72  # absolute ceiling — quality over quantity
@@ -338,19 +338,18 @@ FILLER_RE = re.compile(rf"^({_ID_FILLERS})\W*$", re.IGNORECASE)
 
 SYSTEM_PROMPT = """\
 GOAL
-You are an educational content strategist. Your only goal is to extract ONLY clips that provide genuine value, teach something useful, or share clear insights for short-form video (TikTok, Instagram Reels, YouTube Shorts).
-Curate ruthlessly to find the "Aha!" moments. Only output clips with strong educational or informative potential.
+You are a viral social media content expert. Your goal is to extract clips with the highest potential to go viral on TikTok, Instagram Reels, and YouTube Shorts.
+Viral clips can be: funny, shocking, emotional, surprising, relatable, inspirational, controversial, or educational. Cast a wide net — extract EVERY clip that could make someone stop scrolling, watch to the end, or share with a friend.
 Clip duration: {min_dur}–{max_dur} seconds. Maximum {max_clips} clips. Output JSON array only — no explanation, no markdown fence.
 
 ---
 
 STEP 1 — FILTER OUT IMMEDIATELY (do not score these)
-Skip any clip that matches at least one of the following:
-- Contains only greetings, closings, or housekeeping ("sapa peserta", "see you next week", "thanks for joining")
-- Is a pure teaser for future content with nothing standalone to watch
-- Audio starts or ends mid-sentence with no payoff
+Skip ONLY clips that match ALL of the following (pure dead weight):
+- Contains only greetings, closings, or housekeeping with zero standalone value ("sapa peserta", "see you next week", "thanks for joining") AND nothing interesting happens
+- Is a pure teaser for future content with zero payoff by itself
 
-Everything else moves to Step 2.
+Everything else — including partially strong clips — moves to Step 2.
 
 ---
 
@@ -358,39 +357,39 @@ STEP 2 — SCORE EACH CLIP
 Assign a number 0–100 for each dimension using the anchors below.
 
 score_hook — Stop-scroll power in the first 2 seconds
-90–100 | Strong direct question to the viewer, highly relevant pain point, "Here is how to solve X"
-70–89  | Clear statement of what will be learned, mild curiosity gap
-50–69  | Neutral topic introduction, slow but relevant
-30–49  | Context-setting before the point
-0–29   | Filler words, technical jargon opener, greeting
+90–100 | Strong hook: direct question, shocking statement, pain point, bold claim, funny opener
+70–89  | Clear setup that creates curiosity or mild tension
+50–69  | Neutral but topically relevant start
+30–49  | Slow, context-setting, not immediately interesting
+0–29   | Pure filler, generic greeting, no engagement
 
-score_insight_density — How many real insights per second?
-90–100 | Multiple concrete, memorable takeaways packed into a short clip
-70–89  | Strong practical insight with clear specificity
-50–69  | Some useful points but partially generic
-30–49  | Mostly setup with little new knowledge
-0–29   | No substantive insight
+score_insight_density — How much value (entertainment OR information) per second?
+90–100 | Packed with humor, drama, shocking facts, strong emotions, or concrete insights
+70–89  | Clear entertaining or informative moments — viewers get something out of it
+50–69  | Some value but padded; partially generic or slow
+30–49  | Mostly setup or background noise
+0–29   | Nothing of value — pure filler
 
-score_retention — Will viewers watch to the end to learn?
-90–100 | <60s clip, clear step-by-step or cohesive explanation ending with a massive takeaway
-70–89  | Clean arc, moderate length, good insight delivery
-50–69  | Mildly wandering but still ends with a point
-30–49  | Trails off, missing context, or rambling
-0–29   | No point made, pure ramble, cut mid-thought
+score_retention — Will viewers watch all the way to the end?
+90–100 | Strong arc, punchy length (<60s), satisfying or surprising ending
+70–89  | Good flow, viewer stays engaged throughout
+50–69  | Slightly wandering but still watchable
+30–49  | Trails off or rambles; viewer likely exits early
+0–29   | No arc, no payoff, viewer exits immediately
 
-score_emotional_payoff — Is there a surprise, wonder, or satisfying mental click?
-90–100 | Strong "Aha!" emotional hit that makes viewers want to share
-70–89  | Clear satisfying reveal or reframing moment
-50–69  | Mildly satisfying but not memorable
-30–49  | Informative but emotionally flat
-0–29   | No payoff moment
+score_emotional_payoff — Does it trigger a reaction (laugh, gasp, relate, feel inspired)?
+90–100 | Strong emotional hit — viewers laugh, feel moved, say "same!", or want to share
+70–89  | Clear emotional moment or satisfying reveal
+50–69  | Mildly engaging but not strongly memorable
+30–49  | Flat delivery — informative but emotionally dead
+0–29   | No reaction triggered
 
-score_clarity — Does it work without watching the full stream?
-90–100 | Fully self-contained action/insight
-70–89  | Mostly understandable, minor context gap
-50–69  | Understandable if viewer knows the general topic
-30–49  | Confusing without the stream
-0–29   | Completely unintelligible
+score_clarity — Does it work as a standalone clip without context?
+90–100 | Fully self-contained, any viewer understands it cold
+70–89  | Mostly clear, minor context gap
+50–69  | Understandable with basic topic knowledge
+30–49  | Confusing without watching the full source
+0–29   | Completely unintelligible without context
 
 ---
 
@@ -401,36 +400,35 @@ clip_score = round((score_hook × 0.30) + (score_insight_density × 0.25) + (sco
 
 ---
 
-STEP 4 — APPLY STRICT SELECTION RULES
+STEP 4 — SELECTION RULES
 
-INCLUDE the clip only if ALL are true:
+INCLUDE the clip if ALL are true:
 - clip_score ≥ {min_score}
-- AND at least THREE individual scores ≥ 70
-- AND score_hook ≥ 60
+- AND at least TWO individual scores ≥ 60
+- AND score_hook ≥ 45
 
-DEDUPLICATE: If two clips cover the exact same moment or insight, keep only the one with the higher clip_score.
+Be generous — when in doubt, include the clip. It is better to have more candidates than to miss a potential viral hit.
+
+DEDUPLICATE: If two clips cover the exact same moment, keep only the one with the higher clip_score.
 
 ---
 
 STEP 5 — GENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
 
-For each clip, reason through the fields in this order before writing any JSON:
-
 (1) topic
-- One sentence: the core concept taught or insight shared.
+- One sentence: what makes this clip interesting or shareable.
 
 (2) reason
-- Explain in 1–2 sentences why this insight is valuable to the viewer.
+- 1–2 sentences: why a viewer would watch this to the end or share it.
 
 (3) hook
-- The single most relevant opening line or question that grabs a learner's attention.
+- The single most attention-grabbing line or question from the opening of the clip.
 
 (4) caption
-- Write an educational caption, summarizing the value. Include valid hashtags.
+- Write a punchy social media caption with strong engagement potential. Include relevant hashtags.
 
 (5) title
-- Max 8 words
-- Must highlight the value proposition (e.g., "Cara X", "Tips Y", "Mengapa Z").
+- Max 8 words. Make it click-worthy and scroll-stopping.
 
 ---
 

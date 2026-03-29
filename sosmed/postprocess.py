@@ -92,6 +92,36 @@ def _get_video_info(video_path: str) -> dict[str, Any]:
         }
 
 
+def _compute_orientation_target(
+    src_w: int, src_h: int, orientation: str,
+) -> tuple[int, int] | None:
+    """Return (out_w, out_h) if orientation conversion is needed, else None.
+
+    Standard targets: portrait=1080x1920 (9:16), landscape=1920x1080 (16:9).
+    When the source already matches the target orientation, returns None.
+    """
+    is_portrait = src_h > src_w
+    is_landscape = src_w > src_h
+
+    if orientation == "portrait" and not is_portrait:
+        # Target 9:16.  Use source width as base, compute height.
+        out_w = src_w
+        out_h = round(src_w * 16 / 9)
+        # Ensure even dimensions
+        out_w += out_w % 2
+        out_h += out_h % 2
+        return out_w, out_h
+    elif orientation == "landscape" and not is_landscape:
+        # Target 16:9.  Use source height as base, compute width.
+        out_h = src_h
+        out_w = round(src_h * 16 / 9)
+        out_w += out_w % 2
+        out_h += out_h % 2
+        return out_w, out_h
+
+    return None  # already matches or auto
+
+
 def _postprocess_one(
     raw_clip_path: str,
     clip: dict[str, Any],
@@ -100,15 +130,16 @@ def _postprocess_one(
     *,
     subtitles: bool = True,
     subtitle_position: str = "lower",
+    orientation: str = "auto",
 ) -> str:
     """Post-process a single clip with minimal enhancements.
 
-    Currently only subtitles are applied; no music, SFX or audio mixing
-    is performed.  Returns the path to the post-processed clip.
+    Applies orientation conversion (black bars + centering) and subtitles.
+    Returns the path to the post-processed clip.
     """
     raw_path = Path(raw_clip_path)
     out_path = output_dir / f"{raw_path.stem}_final.mp4"
-    
+
     # Ensure output directory is writable
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -124,10 +155,16 @@ def _postprocess_one(
     if clip_duration <= 0:
         clip_duration = clip["end"] - clip["start"]
 
-    out_w = src_w
-    out_h = src_h
+    # ── 0. Determine output resolution (orientation conversion) ──────────
+    orient_target = _compute_orientation_target(src_w, src_h, orientation)
+    if orient_target:
+        out_w, out_h = orient_target
+        log("DEBUG", f"Clip #{clip.get('rank')}: {src_w}x{src_h} → {out_w}x{out_h} ({orientation})")
+    else:
+        out_w = src_w
+        out_h = src_h
 
-    # ── 1. Generate subtitles ────────────────────────────────────────────────
+    # ── 1. Generate subtitles (at OUTPUT resolution) ─────────────────────
     ass_path = None
     if subtitles:
         words = clip.get("_subtitle_words") or []
@@ -147,7 +184,7 @@ def _postprocess_one(
             ass_path = tmp.name
             log("DEBUG", f"Subtitles written to {ass_path} for clip #{clip.get('rank')} ({len(words)} words)")
 
-    # ── 1.5. Generate title overlay ──────────────────────────────────────────
+    # ── 1.5. Generate title overlay (at OUTPUT resolution) ───────────────
     title_ass_path = None
     title = clip.get("title") or clip.get("topic") or ""
     if title:
@@ -169,12 +206,21 @@ def _postprocess_one(
     # ── 2. Build video filter chain ──────────────────────────────────────────
     vfilters: list[str] = []
 
-    # Apply subtitles first (lower layer)
+    # Orientation conversion: scale to fit + pad with black bars, centered
+    if orient_target:
+        vfilters.append(
+            f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease"
+        )
+        vfilters.append(
+            f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
+        )
+
+    # Apply subtitles (lower layer)
     if ass_path:
         escaped = _escape_ass_path(ass_path)
         vfilters.append(f"ass={escaped}")
-    
-    # Apply title overlay second (upper layer)
+
+    # Apply title overlay (upper layer)
     if title_ass_path:
         escaped_title = _escape_ass_path(title_ass_path)
         vfilters.append(f"ass={escaped_title}")
@@ -292,11 +338,11 @@ def postprocess_clips(
     max_workers: int = 2,
     subtitles: bool = True,
     subtitle_position: str = "lower",
+    orientation: str = "auto",
 ) -> list[str]:
     """Post-process all extracted clips in parallel.
 
-    This simplified version only applies subtitles; other audio mixing
-    and effects have been removed.
+    Applies orientation conversion and subtitles.
     """
     if not raw_clip_paths:
         return []
@@ -304,6 +350,8 @@ def postprocess_clips(
     features = []
     if subtitles:
         features.append("subtitles")
+    if orientation != "auto":
+        features.append(f"orientation={orientation}")
     log("INFO", f"Post-processing {len(raw_clip_paths)} clips: "
                 f"{', '.join(features) or 'none'}")
 
@@ -339,6 +387,7 @@ def postprocess_clips(
                 raw_path, clip, segments, output_dir,
                 subtitles=subtitles,
                 subtitle_position=subtitle_position,
+                orientation=orientation,
             )
             futures[fut] = clip
 

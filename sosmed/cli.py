@@ -118,6 +118,10 @@ def main() -> None:
     ap.add_argument("--subtitle-position", default="lower",
                     choices=["center", "upper", "lower"],
                     help="Subtitle position (default: center)")
+    ap.add_argument("--orientation", default="auto",
+                    choices=["auto", "portrait", "landscape"],
+                    help="Force output orientation: portrait (9:16), landscape (16:9), "
+                         "or auto to keep original (default: auto)")
 
     # ── Testing options ──────────────────────────────────────────────────
     ap.add_argument("--example", action="store_true",
@@ -254,7 +258,7 @@ def main() -> None:
                     log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
                     clip["_subtitle_words"] = []
 
-        any_postprocess = args.subtitles
+        any_postprocess = args.subtitles or args.orientation != "auto"
         if any_postprocess and raw_outputs:
             outputs = postprocess_clips(
                 raw_outputs,
@@ -263,10 +267,11 @@ def main() -> None:
                 output_dir=output_dir,
                 subtitles=args.subtitles,
                 subtitle_position=args.subtitle_position,
+                orientation=args.orientation,
             )
         else:
             outputs = raw_outputs
-        
+
         # Save metadata (preserve all_clips in file, only processed clips subset)
         meta = save_clips_to_disk(all_clips, output_dir)
         
@@ -298,6 +303,7 @@ def main() -> None:
     # Show post-processing features
     pp_features = []
     if args.subtitles: pp_features.append("TikTok Subs")
+    if args.orientation != "auto": pp_features.append(f"Force {args.orientation}")
     if pp_features:
         print(f"  Features  : {', '.join(pp_features)}")
     else:
@@ -495,8 +501,8 @@ def main() -> None:
                 log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
                 clip["_subtitle_words"] = []
 
-    # ── 6. Post-process (subtitles only) ────────────────────────────────
-    any_postprocess = args.subtitles
+    # ── 6. Post-process (subtitles, orientation) ────────────────────────
+    any_postprocess = args.subtitles or args.orientation != "auto"
     if any_postprocess and raw_outputs:
         outputs = postprocess_clips(
             raw_outputs,
@@ -505,6 +511,7 @@ def main() -> None:
             output_dir=output_dir,
             subtitles=args.subtitles,
             subtitle_position=args.subtitle_position,
+            orientation=args.orientation,
         )
     else:
         outputs = raw_outputs

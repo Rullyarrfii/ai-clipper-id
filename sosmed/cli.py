@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .transcription import transcribe
 from .prefilter import prefilter_segments
 from .llm import find_clips, fix_and_improve_clips
@@ -31,9 +33,7 @@ def _get_transcript_cache_path(video_path: str) -> Path:
 
 
 def _make_clip_filename(clip: dict) -> str:
-    """Generate clip filename matching the postprocess naming convention.
-    Matches the pattern: rank{rank:02d}_{safe_title}_final.mp4
-    """
+    """Generate clip filename matching the postprocess naming convention."""
     rank = clip.get("rank", 0)
     safe = re.sub(r"[^\w\s-]", "", clip.get("title", f"clip_{rank}"))
     safe = re.sub(r"\s+", "_", safe)[:50]
@@ -51,8 +51,78 @@ def _ensure_filenames(clips_list: list[dict]) -> bool:
     return changed
 
 
+def _prepare_music(clips, args):
+    """Prepare background music entries for clips if music is enabled."""
+    if not args.music:
+        return {}
+
+    from .music import get_available_music, download_music_library, match_music_batch
+    music_dir = getattr(args, 'music_dir', None) or "music"
+    available = get_available_music(music_dir)
+
+    if not available:
+        log("INFO", "No music files found — attempting auto-download from Pixabay...")
+        downloaded = download_music_library(music_dir=music_dir)
+        if downloaded:
+            log("OK", f"Downloaded {len(downloaded)} music tracks")
+            available = get_available_music(music_dir)
+
+    if not available:
+        log("WARN", "No background music files found. "
+                     "Set PIXABAY_API_KEY env var to auto-download, "
+                     "or place .mp3 files in music/ directory. Skipping music.")
+        return {}
+
+    log("INFO", f"Matching background music for {len(clips)} clips "
+                f"({len(available)} tracks available)...")
+    music_entries = match_music_batch(
+        clips, available,
+        llm_model=args.llm_model,
+        api_key=args.api_key,
+    )
+    matched = sum(1 for c in clips if c.get("rank") in music_entries)
+    log("OK", f"Music matched for {matched}/{len(clips)} clips")
+    return music_entries
+
+
+def _prepare_subtitles(clips, segments, args, detected_language):
+    """Prepare subtitle words for all clips."""
+    if not args.subtitles or not segments:
+        return
+
+    from .subtitles import get_clip_words
+    from .process_single import _should_translate_to_indonesian
+    need_translate = _should_translate_to_indonesian(detected_language)
+    if need_translate:
+        log("INFO", "Translating subtitle words to Indonesian for all clips...")
+        from .llm import translate_subtitle_words
+    else:
+        log("INFO", "Skipping subtitle translation (detected Indonesian audio)")
+    for clip in clips:
+        try:
+            raw_words = get_clip_words(
+                segments,
+                clip_start=clip["start"],
+                clip_end=clip["end"],
+            )
+            if need_translate:
+                clip["_subtitle_words"] = translate_subtitle_words(
+                    raw_words,
+                    llm_model=args.llm_model,
+                    api_key=args.api_key,
+                )
+            else:
+                clip["_subtitle_words"] = raw_words
+        except Exception as e:
+            log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
+            clip["_subtitle_words"] = []
+
+
 def main() -> None:
     """Main CLI entry point."""
+    # Load .env file for API keys and config
+    load_dotenv()
+
     ap = argparse.ArgumentParser(
         description="AI Video Clipper — Indonesian-optimized, auto clip count",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -69,7 +139,7 @@ def main() -> None:
     ap.add_argument("--model", default="turbo",
                     choices=["tiny", "base", "small", "medium",
                              "large-v2", "large-v3", "distil-large-v3", "turbo"],
-                    help="Whisper model size (default: tiny)")
+                    help="Whisper model size (default: turbo)")
     ap.add_argument("--lang", default="id",
                     help="Language code — 'id' Indonesian, 'en' English, "
                          "or None for auto-detect (default: id)")
@@ -96,7 +166,7 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=16,
                     help="Whisper batch size (default: 16; lower if OOM)")
     ap.add_argument("--workers", type=int, default=1,
-                    help="(ignored) previously used for parallel ffmpeg workers; extraction and postprocess now run sequentially")
+                    help="(ignored) previously used for parallel ffmpeg workers")
     ap.add_argument("--chunk-duration", type=float, default=360.0,
                     help="LLM chunk duration in seconds (default: 360)")
     ap.add_argument("--chunk-overlap", type=float, default=60.0,
@@ -117,7 +187,33 @@ def main() -> None:
                          "(default: on, --no-subtitles to disable)")
     ap.add_argument("--subtitle-position", default="lower",
                     choices=["center", "upper", "lower"],
-                    help="Subtitle position (default: center)")
+                    help="Subtitle position (default: lower)")
+
+    # ── Person detection & crop ──────────────────────────────────────────
+    ap.add_argument("--crop", action=argparse.BooleanOptionalAction,
+                    default=False,
+                    help="Enable YOLO person detection + close-up crop "
+                         "(default: off, --crop to enable)")
+    ap.add_argument("--crop-target", default="vertical",
+                    choices=["vertical", "horizontal", "square"],
+                    help="Target aspect ratio for crop (default: vertical = 9:16)")
+
+    # ── Background music ─────────────────────────────────────────────────
+    ap.add_argument("--music", action=argparse.BooleanOptionalAction,
+                    default=False,
+                    help="Add background music matched to clip mood "
+                         "(default: off, --music to enable)")
+    ap.add_argument("--music-dir", default=None,
+                    help="Directory containing music files (default: ./music/)")
+    ap.add_argument("--music-volume", type=float, default=0.06,
+                    help="Background music volume 0.0-1.0 (default: 0.06 = very quiet)")
+
+    # ── Silence removal ──────────────────────────────────────────────────
+    ap.add_argument("--remove-silence", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Remove silent gaps from clips (default: on)")
+    ap.add_argument("--max-silence", type=float, default=1.5,
+                    help="Maximum silence gap in seconds before removal (default: 1.5)")
 
     # ── Testing options ──────────────────────────────────────────────────
     ap.add_argument("--example", action="store_true",
@@ -136,37 +232,33 @@ def main() -> None:
         if not video.exists():
             log("ERROR", f"File not found: {video}")
             sys.exit(1)
-        
-        # Load clips from JSON file in video subdirectory
+
         output_dir = Path(args.output) / video.stem
         clips_file = output_dir / "clips.json"
         if not clips_file.exists():
             log("ERROR", f"Clips file not found: {clips_file}")
             sys.exit(1)
-        
+
         all_clips = json.loads(clips_file.read_text())
-        # ensure filename metadata exists (and update cache if modified)
         if _ensure_filenames(all_clips):
             clips_file.write_text(json.dumps(all_clips, indent=2, ensure_ascii=False))
             log("OK", f"Augmented existing clips with filenames → {clips_file}")
-        clips = all_clips[:args.example_count]  # Take only the first N clips
-        
+        clips = all_clips[:args.example_count]
+
         print(f"\n{BOLD}{CYAN}{'═' * 50}")
         print(f"   AI Video Clipper — Example Mode (Testing)")
         print(f"{'═' * 50}{RESET}")
         print(f"  Video     : {video.name}")
         print(f"  Clips     : {len(clips)} example clips (from {clips_file.name})")
-        
-        # Show post-processing features
+
         pp_features = []
-        if args.subtitles:
-            pp_features.append("TikTok Subs")
-        if pp_features:
-            print(f"  Features  : {', '.join(pp_features)}")
-        else:
-            print(f"  Features  : Raw clips only")
+        if args.subtitles: pp_features.append("TikTok Subs")
+        if args.crop: pp_features.append(f"Crop({args.crop_target})")
+        if args.music: pp_features.append("Music")
+        if args.remove_silence: pp_features.append("Silence-Rm")
+        print(f"  Features  : {', '.join(pp_features) or 'Raw clips only'}")
         print()
-        
+
         # Summary table
         print(f"{BOLD}{'#':<4} {'Score':<6} {'H/I/R/E/C':<18} {'Start':>7} {'End':>7} {'Dur':>5}  Topic{RESET}")
         print("─" * 90)
@@ -181,80 +273,48 @@ def main() -> None:
                   f"{sh}/{si}/{sr}/{se}/{sc}  "
                   f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
         print()
-        
-        # Skip to extraction → post-process
+
         t_total = time.time()
-        
-        # ── Extract raw clips ────────────────────────────────────────────
+
         raw_outputs = extract_clips(
             str(video),
             clips,
             output_dir=output_dir,
             max_workers=args.workers,
         )
-        
-        # In example mode, prefer cached transcript for real word timestamps
+
+        # Load cached transcript
         cache_path = _get_transcript_cache_path(str(video))
         detected_language = {"language": "unknown", "language_probability": 0.0}
         if cache_path.exists():
             log("INFO", f"Loading cached transcript from {cache_path}")
             cache_data = json.loads(cache_path.read_text())
-            # Handle both old format (list) and new format (dict with segments and language_info)
             if isinstance(cache_data, dict) and "segments" in cache_data:
                 segments = cache_data["segments"]
                 detected_language = cache_data.get("language_info", detected_language)
             else:
-                segments = cache_data  # Old format, just a list
+                segments = cache_data
             log("OK", f"Loaded {len(segments)} segments from cache")
         else:
-            # Fall back to minimal segments covering clip ranges
             segments = []
             for clip in clips:
                 segments.append({
-                    "id": 0,
-                    "seek": 0,
-                    "start": clip["start"],
-                    "end": clip["end"],
+                    "id": 0, "seek": 0,
+                    "start": clip["start"], "end": clip["end"],
                     "text": f"{clip.get('title', '')} - {clip.get('topic', '')}",
-                    "tokens": [],
-                    "temperature": 0.0,
-                    "avg_logprob": 0.0,
-                    "compression_ratio": 0.0,
-                    "no_speech_prob": 0.0,
-                    "words": []
+                    "tokens": [], "temperature": 0.0,
+                    "avg_logprob": 0.0, "compression_ratio": 0.0,
+                    "no_speech_prob": 0.0, "words": [],
                 })
-        
-        # ── Post-process ────────────────────────────────────────────────
-        # Prepare subtitles: translate words to Indonesian for each clip
-        if args.subtitles and segments:
-            from .subtitles import get_clip_words
-            from .process_single import _should_translate_to_indonesian
-            need_translate = _should_translate_to_indonesian(detected_language)
-            if need_translate:
-                log("INFO", "Translating subtitle words to Indonesian for all clips...")
-                from .llm import translate_subtitle_words
-            else:
-                log("INFO", "Skipping subtitle translation (detected Indonesian audio)")
-            for clip in clips:
-                try:
-                    raw_words = get_clip_words(
-                        segments,
-                        clip_start=clip["start"],
-                        clip_end=clip["end"],
-                    )
-                    if need_translate:
-                        clip["_subtitle_words"] = translate_subtitle_words(
-                            raw_words,
-                            llm_model=args.llm_model,
-                            api_key=args.api_key,
-                        )
-                    else:
-                        clip["_subtitle_words"] = raw_words
-                except Exception as e:
-                    log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
-                    clip["_subtitle_words"] = []
 
-        any_postprocess = args.subtitles
+        # Prepare subtitles
+        _prepare_subtitles(clips, segments, args, detected_language)
+
+        # Prepare music
+        music_entries = _prepare_music(clips, args)
+
+        # Post-process
+        any_postprocess = args.subtitles or args.crop or args.music or args.remove_silence
         if any_postprocess and raw_outputs:
             outputs = postprocess_clips(
                 raw_outputs,
@@ -263,24 +323,28 @@ def main() -> None:
                 output_dir=output_dir,
                 subtitles=args.subtitles,
                 subtitle_position=args.subtitle_position,
+                enable_crop=args.crop,
+                crop_target=args.crop_target,
+                enable_music=args.music,
+                music_entries=music_entries,
+                music_volume=args.music_volume,
+                enable_silence_removal=args.remove_silence,
+                max_silence=args.max_silence,
             )
         else:
             outputs = raw_outputs
-        
-        # Save metadata (preserve all_clips in file, only processed clips subset)
+
         meta = save_clips_to_disk(all_clips, output_dir)
-        
+
         elapsed_total = time.time() - t_total
         print(f"\n{GREEN}{BOLD}✓ Done!{RESET} "
               f"{len(outputs)}/{len(clips)} clips extracted (from {len(all_clips)} total) → {output_dir}/ "
               f"({elapsed_total:.0f}s total)")
         if any_postprocess:
-            pp_str = []
-            if args.subtitles:
-                pp_str.append("subtitles")
-            print(f"  Enhanced  : {', '.join(pp_str)}")
+            print(f"  Enhanced  : {', '.join(pp_features)}")
         print(f"  Metadata  → {meta}")
         return
+
     if not video.exists():
         log("ERROR", f"File not found: {video}")
         sys.exit(1)
@@ -298,27 +362,25 @@ def main() -> None:
     # Show post-processing features
     pp_features = []
     if args.subtitles: pp_features.append("TikTok Subs")
-    if pp_features:
-        print(f"  Features  : {', '.join(pp_features)}")
-    else:
-        print(f"  Features  : Raw clips only")
+    if args.crop: pp_features.append(f"Crop({args.crop_target})")
+    if args.music: pp_features.append("Music")
+    if args.remove_silence: pp_features.append("Silence-Rm")
+    print(f"  Features  : {', '.join(pp_features) or 'Raw clips only'}")
     print()
 
     # ── 1. Transcribe ────────────────────────────────────────────────────────
     t_total = time.time()
 
-    # Check for cached transcript
     cache_path = _get_transcript_cache_path(str(video))
     detected_language = {"language": "unknown", "language_probability": 0.0}
     if cache_path.exists():
         log("INFO", f"Loading cached transcript from {cache_path}")
         cache_data = json.loads(cache_path.read_text())
-        # Handle both old format (list) and new format (dict with segments and language_info)
         if isinstance(cache_data, dict) and "segments" in cache_data:
             segments = cache_data["segments"]
             detected_language = cache_data.get("language_info", detected_language)
         else:
-            segments = cache_data  # Old format, just a list
+            segments = cache_data
         log("OK", f"Loaded {len(segments)} segments from cache")
     else:
         segments, detected_language = transcribe(
@@ -332,7 +394,6 @@ def main() -> None:
             vad_speech_pad_ms=args.vad_speech_pad,
             batch_size=args.batch,
         )
-        # Save to cache (new format with language info)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_data = {"segments": segments, "language_info": detected_language}
         cache_path.write_text(json.dumps(cache_data, indent=2, ensure_ascii=False))
@@ -360,23 +421,20 @@ def main() -> None:
         sys.exit(1)
 
     # ── 3. LLM analysis ─────────────────────────────────────────────────────
-    # Check if clips.json already exists (cached from previous run)
     output_dir.mkdir(parents=True, exist_ok=True)
     clips_cache_file = output_dir / "clips.json"
     raw_clips_cache_file = output_dir / ".clips_raw.json"
     clips_from_cache = False
-    
+
     if clips_cache_file.exists():
         log("INFO", f"Loading cached clips from {clips_cache_file}")
         clips = json.loads(clips_cache_file.read_text())
-        # update filenames if needed
         if _ensure_filenames(clips):
             clips_cache_file.write_text(json.dumps(clips, indent=2, ensure_ascii=False))
             log("OK", f"Patched filenames in cache → {clips_cache_file}")
         log("OK", f"Loaded {len(clips)} clips from cache (skipped LLM, tighten, improve)")
         clips_from_cache = True
     else:
-        # LLM analysis
         video_dur = _get_video_duration(str(video))
         clips = find_clips(
             filtered,
@@ -391,22 +449,20 @@ def main() -> None:
             chunk_overlap=args.chunk_overlap,
             raw_clips_cache_file=raw_clips_cache_file,
         )
-        # ensure metadata has filenames for new clips
         _ensure_filenames(clips)
 
     if not clips:
         log("WARN", "No engaging clips found. Exiting.")
         sys.exit(0)
 
-    # Skip tighten + improve if clips loaded from cache (already processed)
     if not clips_from_cache:
-        # Tighten clip boundaries to actual speech (remove gaps, filler, silence)
+        # Tighten clip boundaries
         original_durations = [c["end"] - c["start"] for c in clips]
         clips = tighten_clip_boundaries(
             clips, segments,
             padding=0.15,
-            max_gap=2.0,  # Remove silence gaps > 2 seconds
-            min_speech_density=0.5,  # Words per second threshold for "dense" speech
+            max_gap=2.0,
+            min_speech_density=0.5,
         )
         new_durations = [c["end"] - c["start"] for c in clips]
         time_saved = sum(original_durations) - sum(new_durations)
@@ -423,12 +479,10 @@ def main() -> None:
             api_key=args.api_key,
             detected_language=detected_language,
         )
-        # Re-sync filenames in case title/topic changed during improvement
-        # (e.g. Indonesian translation, deduplication renames)
         _ensure_filenames(clips)
         log("OK", f"Clip improvement complete: {len(clips)} clips after deduplication")
 
-    # 💾 Save metadata early (~as soon as we have final clip information)
+    # Save metadata early
     meta = save_clips_to_disk(clips, output_dir)
     log("OK", f"Metadata saved early → {meta}")
 
@@ -447,8 +501,8 @@ def main() -> None:
               f"{c['start']:>7.1f} {c['end']:>7.1f} {d:>4.0f}s  {c.get('topic', c['title'])}")
     print()
 
-    # Show captions for easy copy-paste
-    print(f"{BOLD}📋 Captions (ready to paste):{RESET}")
+    # Show captions
+    print(f"{BOLD}Captions (ready to paste):{RESET}")
     print("─" * 60)
     for c in clips:
         caption = c.get("caption", "")
@@ -466,50 +520,34 @@ def main() -> None:
         max_workers=args.workers,
     )
 
-    # ── 5. Prepare subtitles: translate words to Indonesian for each clip
-    if args.subtitles and segments:
-        from .subtitles import get_clip_words
-        from .process_single import _should_translate_to_indonesian
-        need_translate = _should_translate_to_indonesian(detected_language)
-        if need_translate:
-            log("INFO", "Translating subtitle words to Indonesian for all clips...")
-            from .llm import translate_subtitle_words
-        else:
-            log("INFO", "Skipping subtitle translation (detected Indonesian audio)")
-        for clip in clips:
-            try:
-                raw_words = get_clip_words(
-                    segments,
-                    clip_start=clip["start"],
-                    clip_end=clip["end"],
-                )
-                if need_translate:
-                    clip["_subtitle_words"] = translate_subtitle_words(
-                        raw_words,
-                        llm_model=args.llm_model,
-                        api_key=args.api_key,
-                    )
-                else:
-                    clip["_subtitle_words"] = raw_words
-            except Exception as e:
-                log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
-                clip["_subtitle_words"] = []
+    # ── 5. Prepare subtitles ─────────────────────────────────────────────────
+    _prepare_subtitles(clips, segments, args, detected_language)
 
-    # ── 6. Post-process (subtitles only) ────────────────────────────────
-    any_postprocess = args.subtitles
+    # ── 5b. Prepare background music ─────────────────────────────────────────
+    music_entries = _prepare_music(clips, args)
+
+    # ── 6. Post-process ──────────────────────────────────────────────────────
+    any_postprocess = args.subtitles or args.crop or args.music or args.remove_silence
     if any_postprocess and raw_outputs:
         outputs = postprocess_clips(
             raw_outputs,
             clips,
-            segments,  # original segments for word timestamps
+            segments,
             output_dir=output_dir,
             subtitles=args.subtitles,
             subtitle_position=args.subtitle_position,
+            enable_crop=args.crop,
+            crop_target=args.crop_target,
+            enable_music=args.music,
+            music_entries=music_entries,
+            music_volume=args.music_volume,
+            enable_silence_removal=args.remove_silence,
+            max_silence=args.max_silence,
         )
     else:
         outputs = raw_outputs
 
-    # Save final metadata (includes filenames set by extraction/postprocess)
+    # Save final metadata
     meta = save_clips_to_disk(clips, output_dir)
 
     elapsed_total = time.time() - t_total
@@ -517,8 +555,5 @@ def main() -> None:
           f"{len(outputs)}/{len(clips)} clips extracted → {output_dir}/ "
           f"({elapsed_total:.0f}s total)")
     if any_postprocess:
-        pp_str = []
-        if args.subtitles:
-            pp_str.append("subtitles")
-        print(f"  Enhanced  : {', '.join(pp_str)}")
+        print(f"  Enhanced  : {', '.join(pp_features)}")
     print(f"  Metadata  → {meta}")

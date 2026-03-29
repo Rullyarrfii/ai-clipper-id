@@ -346,10 +346,38 @@ IMPORTANT — LANGUAGE: ALL text fields (topic, reason, hook, caption, title) MU
 
 ---
 
+CRITICAL RULE — HOOK-FIRST CLIPS
+
+The FIRST sentence of every clip is the most important part. It determines whether someone keeps watching or scrolls away. Follow these rules strictly:
+
+1. START TIME PLACEMENT: The clip must start so that the first spoken word arrives within 0.3–0.8 seconds. Do NOT start with a long silent gap — the viewer must hear speech almost immediately. A tiny breath/pause is fine, but 2+ seconds of silence at the start = death.
+
+2. FIRST SENTENCE MUST BE A HOOK. Examples of great hooks:
+   - A bold/controversial claim: "Semua orang salah soal ini..."
+   - A direct question: "Kenapa kita selalu gagal di hal ini?"
+   - A shocking fact: "90% orang Indonesia nggak tau ini..."
+   - A pain point: "Pernah nggak sih lo ngerasa stuck?"
+   - A promise of value: "Gue kasih tau rahasia yang bikin gue berhasil"
+   - Mid-sentence energy: Starting mid-thought creates intrigue ("...dan yang paling gila adalah...")
+   Do NOT start with: greetings ("halo semua"), filler ("jadi gini ya"), throat-clearing, or slow context-setting.
+
+3. ENDING MUST LAND WELL. The last 2–3 seconds should feel like a natural conclusion:
+   - A punchline, conclusion, or callback
+   - An emotional peak or satisfying insight
+   - A cliffhanger that makes viewers want more
+   - A strong statement that lingers
+   Do NOT end mid-sentence, trail off, or cut during an "um/uh". The clip must feel complete.
+
+4. AUDIO MOMENTUM: The clip should have consistent audio energy. Avoid clips with long silent gaps (>2s) in the middle — these kill retention. Prefer clips where the speaker maintains pace and energy throughout.
+
+---
+
 STEP 1 — FILTER OUT IMMEDIATELY (do not score these)
 Skip ONLY clips that match ALL of the following (pure dead weight):
 - Contains only greetings, closings, or housekeeping with zero standalone value ("sapa peserta", "see you next week", "thanks for joining") AND nothing interesting happens
 - Is a pure teaser for future content with zero payoff by itself
+- Starts with a long silent gap (>3 seconds before first speech)
+- Has no clear ending — trails off or gets cut mid-thought
 
 Everything else — including partially strong clips — moves to Step 2.
 
@@ -358,12 +386,12 @@ Everything else — including partially strong clips — moves to Step 2.
 STEP 2 — SCORE EACH CLIP
 Assign a number 0–100 for each dimension using the anchors below.
 
-score_hook — Stop-scroll power in the first 2 seconds
-90–100 | Strong hook: direct question, shocking statement, pain point, bold claim, funny opener
-70–89  | Clear setup that creates curiosity or mild tension
-50–69  | Neutral but topically relevant start
-30–49  | Slow, context-setting, not immediately interesting
-0–29   | Pure filler, generic greeting, no engagement
+score_hook — Stop-scroll power in the first 2 seconds (THE MOST IMPORTANT SCORE)
+90–100 | Killer hook: bold claim, shocking fact, direct question, funny opener, mid-sentence intrigue. Speech starts within 0.5s.
+70–89  | Clear setup that creates curiosity or mild tension. Speech starts within 1s.
+50–69  | Neutral but topically relevant start. Slight delay acceptable.
+30–49  | Slow, context-setting, filler words first, not immediately interesting
+0–29   | Pure filler, generic greeting, long silence before speech
 
 score_insight_density — How much value (entertainment OR information) per second?
 90–100 | Packed with humor, drama, shocking facts, strong emotions, or concrete insights
@@ -373,10 +401,10 @@ score_insight_density — How much value (entertainment OR information) per seco
 0–29   | Nothing of value — pure filler
 
 score_retention — Will viewers watch all the way to the end?
-90–100 | Strong arc, punchy length (<60s), satisfying or surprising ending
-70–89  | Good flow, viewer stays engaged throughout
+90–100 | Strong arc, punchy length (<60s), satisfying or surprising ending, no dead air
+70–89  | Good flow, viewer stays engaged throughout, clean ending
 50–69  | Slightly wandering but still watchable
-30–49  | Trails off or rambles; viewer likely exits early
+30–49  | Trails off, has silent gaps, or rambles; viewer likely exits early
 0–29   | No arc, no payoff, viewer exits immediately
 
 score_emotional_payoff — Does it trigger a reaction (laugh, gasp, relate, feel inspired)?
@@ -407,6 +435,7 @@ STEP 4 — SELECTION RULES
 INCLUDE the clip if ALL are true:
 - clip_score ≥ {min_score}
 - AND at least TWO individual scores ≥ 50
+- AND score_hook ≥ 40 (clips with terrible hooks are never worth posting)
 
 Be generous — when in doubt, include the clip. It is better to have more candidates than to miss a potential viral hit.
 
@@ -423,13 +452,16 @@ STEP 5 — GENERATE FIELDS IN THIS EXACT SEQUENCE FOR EVERY INCLUDED CLIP
 - 1–2 sentences: why a viewer would watch this to the end or share it.
 
 (3) hook
-- The single most attention-grabbing line or question from the opening of the clip.
+- The EXACT first sentence/phrase that the viewer will hear. This must be the actual words from the transcript at the clip's start time — not a summary. This is what makes or breaks the clip.
 
 (4) caption
 - Write a punchy social media caption with strong engagement potential. Include relevant hashtags.
 
 (5) title
 - Max 8 words. Make it click-worthy and scroll-stopping.
+
+(6) closing_line
+- The last sentence/phrase the viewer will hear. Must feel like a natural ending point — a punchline, conclusion, revelation, or strong statement.
 
 ---
 
@@ -445,6 +477,7 @@ Return a JSON array sorted by clip_score descending. Each object MUST have ALL o
     "topic": "...",
     "reason": "...",
     "hook": "...",
+    "closing_line": "...",
     "caption": "...",
     "title": "...",
     "score_hook": 85,
@@ -457,5 +490,5 @@ Return a JSON array sorted by clip_score descending. Each object MUST have ALL o
 ]
 ```
 
-CRITICAL: Every clip MUST include start, end, ALL five score_* fields (integers 0-100), and clip_score (float). Clips missing scores will be discarded.
+CRITICAL: Every clip MUST include start, end, ALL five score_* fields (integers 0-100), clip_score (float), and closing_line. Clips missing scores will be discarded.
 """

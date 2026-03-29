@@ -243,6 +243,7 @@ def _validate_clips(
         c.setdefault("caption", "")
         c.setdefault("reason", "")
         c.setdefault("hook", "")
+        c.setdefault("closing_line", "")
         c.update(normalized)
         c["clip_score"] = score
         c.pop("_score", None)

@@ -1,7 +1,7 @@
 """
-Post-processing orchestrator: subtitles.
+Post-processing orchestrator: subtitles, person detection, music, silence removal.
 
-Takes raw extracted clips and applies visual enhancements
+Takes raw extracted clips and applies visual/audio enhancements
 in a single FFmpeg pass for efficiency.
 """
 
@@ -18,13 +18,8 @@ from .utils import get_ffmpeg, get_ffprobe, log
 
 
 def _escape_ass_path(path: str) -> str:
-    """Escape file path for FFmpeg's libass subtitle filter in filter_complex.
-
-    Escapes special characters that the ffmpeg filter graph parser would
-    otherwise interpret as syntax: backslash, colon, quotes, brackets, semicolons.
-    Do NOT wrap in quotes — just escape individual characters.
-    """
-    escaped = path.replace("\\", "\\\\")  # backslash first
+    """Escape file path for FFmpeg's libass subtitle filter in filter_complex."""
+    escaped = path.replace("\\", "\\\\")
     for ch in ":'[];,":
         escaped = escaped.replace(ch, f"\\{ch}")
     return escaped
@@ -92,36 +87,6 @@ def _get_video_info(video_path: str) -> dict[str, Any]:
         }
 
 
-def _compute_orientation_target(
-    src_w: int, src_h: int, orientation: str,
-) -> tuple[int, int] | None:
-    """Return (out_w, out_h) if orientation conversion is needed, else None.
-
-    Standard targets: portrait=1080x1920 (9:16), landscape=1920x1080 (16:9).
-    When the source already matches the target orientation, returns None.
-    """
-    is_portrait = src_h > src_w
-    is_landscape = src_w > src_h
-
-    if orientation == "portrait" and not is_portrait:
-        # Target 9:16.  Use source width as base, compute height.
-        out_w = src_w
-        out_h = round(src_w * 16 / 9)
-        # Ensure even dimensions
-        out_w += out_w % 2
-        out_h += out_h % 2
-        return out_w, out_h
-    elif orientation == "landscape" and not is_landscape:
-        # Target 16:9.  Use source height as base, compute width.
-        out_h = src_h
-        out_w = round(src_h * 16 / 9)
-        out_w += out_w % 2
-        out_h += out_h % 2
-        return out_w, out_h
-
-    return None  # already matches or auto
-
-
 def _postprocess_one(
     raw_clip_path: str,
     clip: dict[str, Any],
@@ -131,19 +96,31 @@ def _postprocess_one(
     subtitles: bool = True,
     subtitle_position: str = "lower",
     orientation: str = "auto",
+    enable_crop: bool = False,
+    crop_target: str = "vertical",
+    enable_music: bool = False,
+    music_entry: dict[str, str] | None = None,
+    music_volume: float = 0.06,
+    enable_silence_removal: bool = False,
+    max_silence: float = 1.5,
 ) -> str:
-    """Post-process a single clip with minimal enhancements.
+    """Post-process a single clip with all enhancements.
 
-    Applies orientation conversion (black bars + centering) and subtitles.
+    Features applied in order:
+    1. Person detection + crop (if enabled)
+    2. Silence removal (if enabled)
+    3. Subtitles overlay
+    4. Title overlay
+    5. Background music mixing (if enabled)
+    6. Audio loudnorm
+
     Returns the path to the post-processed clip.
     """
     raw_path = Path(raw_clip_path)
     out_path = output_dir / f"{raw_path.stem}_final.mp4"
 
-    # Ensure output directory is writable
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get info about the raw clip
     info = _get_video_info(raw_clip_path)
     if not info.get("has_video", True):
         log("WARN", f"Clip #{clip.get('rank')} has no video stream — skipping postprocess")
@@ -155,19 +132,84 @@ def _postprocess_one(
     if clip_duration <= 0:
         clip_duration = clip["end"] - clip["start"]
 
+    out_w = src_w
+    out_h = src_h
+
     # ── 0. Determine output resolution (orientation conversion) ──────────
     orient_target = _compute_orientation_target(src_w, src_h, orientation)
     if orient_target:
         out_w, out_h = orient_target
         log("DEBUG", f"Clip #{clip.get('rank')}: {src_w}x{src_h} → {out_w}x{out_h} ({orientation})")
-    else:
-        out_w = src_w
-        out_h = src_h
 
-    # ── 1. Generate subtitles (at OUTPUT resolution) ─────────────────────
+    # ── 0b. Person detection + crop ───────────────────────────────────────────
+    crop_filter = None
+    if enable_crop:
+        from .person_detection import (
+            detect_persons_in_clip, compute_crop_region,
+            build_crop_filter, needs_crop,
+        )
+        aspect_map = {"vertical": 9 / 16, "horizontal": 16 / 9, "square": 1.0}
+        target_aspect = aspect_map.get(crop_target, 9 / 16)
+
+        if needs_crop(src_w, src_h, crop_target):
+            log("DEBUG", f"Clip #{clip.get('rank')}: detecting persons for {crop_target} crop...")
+            detections = detect_persons_in_clip(raw_clip_path, sample_interval=1.0)
+
+            if detections:
+                region = compute_crop_region(
+                    detections, src_w, src_h,
+                    target_aspect=target_aspect,
+                )
+                if region:
+                    # Determine target resolution
+                    if crop_target == "vertical":
+                        target_w, target_h = 1080, 1920
+                    elif crop_target == "horizontal":
+                        target_w, target_h = 1920, 1080
+                    else:
+                        target_w, target_h = 1080, 1080
+
+                    crop_filter = build_crop_filter(region, target_w, target_h)
+                    out_w, out_h = target_w, target_h
+                    log("DEBUG", f"Clip #{clip.get('rank')}: crop region {region}")
+            else:
+                log("DEBUG", f"Clip #{clip.get('rank')}: no persons detected, using center crop")
+                # Fallback: center crop without person detection
+                if crop_target == "vertical" and src_w > src_h:
+                    crop_w = int(src_h * target_aspect)
+                    crop_w = crop_w - (crop_w % 2)
+                    crop_x = (src_w - crop_w) // 2
+                    crop_filter = f"crop={crop_w}:{src_h}:{crop_x}:0,scale=1080:1920:flags=lanczos"
+                    out_w, out_h = 1080, 1920
+
+    # ── 1. Silence removal ───────────────────────────────────────────────────
+    silence_filter_v = None
+    silence_filter_a = None
+    subtitle_words = clip.get("_subtitle_words") or []
+
+    if enable_silence_removal and subtitle_words:
+        from .silence_removal import (
+            compute_silence_removal, build_silence_removal_filter,
+            adjust_subtitle_times,
+        )
+        keep_regions = compute_silence_removal(
+            subtitle_words, clip_duration,
+            max_silence=max_silence,
+            min_kept_duration=5.0,
+        )
+        if keep_regions:
+            silence_filter_v, silence_filter_a = build_silence_removal_filter(keep_regions)
+            # Adjust subtitle word times for the shortened clip
+            subtitle_words = adjust_subtitle_times(subtitle_words, keep_regions)
+            new_duration = sum(end - start for start, end in keep_regions)
+            log("DEBUG", f"Clip #{clip.get('rank')}: silence removal "
+                         f"{clip_duration:.1f}s → {new_duration:.1f}s")
+            clip_duration = new_duration
+
+    # ── 2. Generate subtitles ────────────────────────────────────────────────
     ass_path = None
     if subtitles:
-        words = clip.get("_subtitle_words") or []
+        words = subtitle_words
         if words:
             ass_content = generate_ass_subtitles(
                 words,
@@ -182,9 +224,8 @@ def _postprocess_one(
             tmp.write(ass_content)
             tmp.close()
             ass_path = tmp.name
-            log("DEBUG", f"Subtitles written to {ass_path} for clip #{clip.get('rank')} ({len(words)} words)")
 
-    # ── 1.5. Generate title overlay (at OUTPUT resolution) ───────────────
+    # ── 3. Generate title overlay ────────────────────────────────────────────
     title_ass_path = None
     title = clip.get("title") or clip.get("topic") or ""
     if title:
@@ -201,118 +242,148 @@ def _postprocess_one(
         tmp_title.write(title_content)
         tmp_title.close()
         title_ass_path = tmp_title.name
-        log("DEBUG", f"Title overlay written to {title_ass_path} for clip #{clip.get('rank')}")
 
-    # ── 2. Build video filter chain ──────────────────────────────────────────
-    vfilters: list[str] = []
-
-    # Orientation conversion: scale to fit + pad with black bars, centered
-    if orient_target:
-        vfilters.append(
-            f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease"
-        )
-        vfilters.append(
-            f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
-        )
-
-    # Apply subtitles (lower layer)
-    if ass_path:
-        escaped = _escape_ass_path(ass_path)
-        vfilters.append(f"ass={escaped}")
-
-    # Apply title overlay (upper layer)
-    if title_ass_path:
-        escaped_title = _escape_ass_path(title_ass_path)
-        vfilters.append(f"ass={escaped_title}")
-
-    # boost audio through loudnorm
-    audio_filter = "loudnorm=I=-14:LRA=10:TP=-1.5" if has_audio else ""
-
-    # ── 4. Build FFmpeg command ──────────────────────────────────────────────
+    # ── 4. Build complete FFmpeg command ─────────────────────────────────────
     cmd: list[str] = [get_ffmpeg(), "-y", "-hide_banner"]
-
-    # Main input
     cmd.extend(["-i", raw_clip_path])
 
-    # Build filter_complex string
+    # Extra inputs (music)
+    music_input_idx = None
+    if enable_music and music_entry and Path(music_entry.get("file", "")).exists():
+        music_file = music_entry["file"]
+        cmd.extend(["-stream_loop", "-1", "-i", music_file])
+        music_input_idx = 1  # second input
+
+    # Build filter_complex
     filter_parts: list[str] = []
+    current_v_label = "[0:v]"
+    current_a_label = "[0:a]"
+    label_counter = 0
 
-    if vfilters:
-        # Chain filters with explicit pad labels to avoid FFmpeg syntax errors
-        # When chaining multiple filters, each needs explicit input/output pads
-        if len(vfilters) == 1:
-            # Single filter: [0:v]filter[vout]
-            filter_parts.append(f"[0:v]{vfilters[0]}[vout]")
+    def _next_label(prefix: str = "tmp") -> str:
+        nonlocal label_counter
+        label_counter += 1
+        return f"[{prefix}{label_counter}]"
+
+    # Video filter chain
+    vfilters_chain: list[str] = []
+
+    # Silence removal (video)
+    if silence_filter_v:
+        vfilters_chain.append(silence_filter_v)
+
+    # Crop filter
+    if crop_filter:
+        vfilters_chain.append(crop_filter)
+
+    # Subtitle filters
+    if ass_path:
+        escaped = _escape_ass_path(ass_path)
+        vfilters_chain.append(f"ass={escaped}")
+    if title_ass_path:
+        escaped_title = _escape_ass_path(title_ass_path)
+        vfilters_chain.append(f"ass={escaped_title}")
+
+    # Build video filter chain with labels
+    if vfilters_chain:
+        if len(vfilters_chain) == 1:
+            filter_parts.append(f"{current_v_label}{vfilters_chain[0]}[vout]")
         else:
-            # Multiple filters: [0:v]filter1[tmp1];[tmp1]filter2[tmp2];...;[tmpN]filterN[vout]
-            chain_parts = ["[0:v]" + vfilters[0] + "[tmp0]"]
-            for i, vf in enumerate(vfilters[1:], start=1):
-                if i == len(vfilters) - 1:
-                    # Last filter outputs to [vout]
-                    chain_parts.append(f"[tmp{i-1}]{vf}[vout]")
+            parts = []
+            for i, vf in enumerate(vfilters_chain):
+                if i == 0:
+                    out_label = _next_label("v")
+                    parts.append(f"{current_v_label}{vf}{out_label}")
+                elif i == len(vfilters_chain) - 1:
+                    parts.append(f"{out_label}{vf}[vout]")
                 else:
-                    # Intermediate filters output to [tmpN]
-                    chain_parts.append(f"[tmp{i-1}]{vf}[tmp{i}]")
-            filter_parts.append(";".join(chain_parts))
+                    new_label = _next_label("v")
+                    parts.append(f"{out_label}{vf}{new_label}")
+                    out_label = new_label
+            filter_parts.append(";".join(parts))
 
-    # Add audio loudnorm filter to filter_complex
-    if audio_filter and has_audio:
-        filter_parts.append(f"[0:a]{audio_filter}[aout]")
+    # Audio filter chain
+    afilters: list[str] = []
+
+    # Silence removal (audio)
+    if silence_filter_a:
+        afilters.append(silence_filter_a)
+
+    # Audio loudnorm
+    if has_audio:
+        afilters.append("loudnorm=I=-14:LRA=10:TP=-1.5")
+
+    if has_audio and afilters:
+        afilter_str = ",".join(afilters)
+        if music_input_idx is not None:
+            # Mix with background music
+            filter_parts.append(f"{current_a_label}{afilter_str}[voice]")
+
+            # Music filter: trim, fade, volume
+            fade_in = min(1.0, clip_duration * 0.1)
+            fade_out = min(2.0, clip_duration * 0.15)
+            fade_out_start = max(0, clip_duration - fade_out)
+            music_filter = (
+                f"[{music_input_idx}:a]"
+                f"atrim=0:{clip_duration:.3f},"
+                f"afade=t=in:st=0:d={fade_in:.2f},"
+                f"afade=t=out:st={fade_out_start:.2f}:d={fade_out:.2f},"
+                f"volume={music_volume:.3f}"
+                f"[bgm]"
+            )
+            filter_parts.append(music_filter)
+            filter_parts.append("[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]")
+        else:
+            filter_parts.append(f"{current_a_label}{afilter_str}[aout]")
 
     if filter_parts:
         full_filter = ";".join(filter_parts)
         cmd.extend(["-filter_complex", full_filter])
 
-        # Map outputs
-        if vfilters:
+        if vfilters_chain:
             cmd.extend(["-map", "[vout]"])
         else:
             cmd.extend(["-map", "0:v:0"])
 
-        # Use normalized audio if available, otherwise original
-        if has_audio and audio_filter:
+        if has_audio:
             cmd.extend(["-map", "[aout]"])
-        elif has_audio:
-            cmd.extend(["-map", "0:a:0?"])
         else:
             cmd.append("-an")
     else:
-        # No filters at all — simple re-encode
         cmd.extend(["-map", "0:v:0"])
         if has_audio:
             cmd.extend(["-map", "0:a:0?"])
         else:
             cmd.append("-an")
 
-    # Audio encoding settings
+    # Encoding settings
     if has_audio:
         audio_enc = ["-c:a", "aac", "-b:a", "192k"]
     else:
-        audio_enc = ["-c:a", "aac"]  # Still set codec even if no input audio
+        audio_enc = ["-c:a", "aac"]
 
-    # Use libx264 when filters are applied, otherwise can copy
-    if vfilters:
+    if vfilters_chain or silence_filter_v:
         video_enc = ["-c:v", "libx264", "-preset", "fast", "-crf", "23"]
     else:
         video_enc = ["-c:v", "copy"]
+
     output_flags = ["-shortest", "-movflags", "+faststart", "-loglevel", "error"]
 
     full_cmd = cmd + video_enc + audio_enc + output_flags + [str(out_path)]
     try:
-        result = subprocess.run(full_cmd, check=True, capture_output=True, text=True)
+        subprocess.run(full_cmd, check=True, capture_output=True, text=True)
         log("DEBUG", f"Clip #{clip.get('rank')} post-processed")
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         error_detail = e.stderr[:300] if isinstance(e, subprocess.CalledProcessError) and e.stderr else str(e)
         log("DEBUG", f"ffmpeg cmd: {' '.join(full_cmd)}")
         raise RuntimeError(f"Post-processing failed for clip #{clip.get('rank', '?')}: {error_detail}")
 
-    # ── 5. Cleanup ───────────────────────────────────────────────────────────
+    # ── Cleanup ──────────────────────────────────────────────────────────────
     if ass_path:
         try:
             os.unlink(ass_path)
         except OSError:
             pass
-    
     if title_ass_path:
         try:
             os.unlink(title_ass_path)
@@ -325,7 +396,7 @@ def _postprocess_one(
             raw_path.unlink()
     except OSError:
         pass
-    
+
     return str(out_path)
 
 
@@ -339,10 +410,30 @@ def postprocess_clips(
     subtitles: bool = True,
     subtitle_position: str = "lower",
     orientation: str = "auto",
+    enable_crop: bool = False,
+    crop_target: str = "vertical",
+    enable_music: bool = False,
+    music_entries: dict[int, dict[str, str]] | None = None,
+    music_volume: float = 0.06,
+    enable_silence_removal: bool = False,
+    max_silence: float = 1.5,
 ) -> list[str]:
-    """Post-process all extracted clips in parallel.
+    """Post-process all extracted clips.
 
-    Applies orientation conversion and subtitles.
+    Args:
+        raw_clip_paths: Paths to raw extracted clips
+        clips: Clip metadata dicts
+        segments: Whisper segments for word timestamps
+        output_dir: Output directory
+        subtitles: Enable subtitle overlay
+        subtitle_position: "lower", "center", or "upper"
+        enable_crop: Enable person-detection crop
+        crop_target: "vertical", "horizontal", or "square"
+        enable_music: Enable background music
+        music_entries: Dict mapping clip rank → music entry
+        music_volume: Background music volume (0.0–1.0)
+        enable_silence_removal: Enable silence gap removal
+        max_silence: Max silence gap to allow (seconds)
     """
     if not raw_clip_paths:
         return []
@@ -350,24 +441,23 @@ def postprocess_clips(
     features = []
     if subtitles:
         features.append("subtitles")
-    if orientation != "auto":
-        features.append(f"orientation={orientation}")
+    if enable_crop:
+        features.append(f"crop({crop_target})")
+    if enable_music:
+        features.append("music")
+    if enable_silence_removal:
+        features.append("silence-removal")
     log("INFO", f"Post-processing {len(raw_clip_paths)} clips: "
                 f"{', '.join(features) or 'none'}")
 
-    # Build a rank→clip lookup for matching raw paths to clip metadata
-    # Raw clips are named rank##_... so we match by rank
     rank_to_clip = {c["rank"]: c for c in clips}
 
     results: list[str] = []
-
-    # Use lower parallelism for post-processing (more CPU intensive)
     effective_workers = min(max_workers, max(1, len(raw_clip_paths)))
 
     with ThreadPoolExecutor(max_workers=effective_workers) as pool:
         futures = {}
         for raw_path in raw_clip_paths:
-            # Extract rank from filename: rank01_Title... or similar
             fname = Path(raw_path).stem
             rank = None
             for c in clips:
@@ -382,12 +472,20 @@ def postprocess_clips(
                 continue
 
             clip = rank_to_clip[rank]
+            music_entry = (music_entries or {}).get(rank)
+
             fut = pool.submit(
                 _postprocess_one,
                 raw_path, clip, segments, output_dir,
                 subtitles=subtitles,
                 subtitle_position=subtitle_position,
-                orientation=orientation,
+                enable_crop=enable_crop,
+                crop_target=crop_target,
+                enable_music=enable_music,
+                music_entry=music_entry,
+                music_volume=music_volume,
+                enable_silence_removal=enable_silence_removal,
+                max_silence=max_silence,
             )
             futures[fut] = clip
 
@@ -396,7 +494,6 @@ def postprocess_clips(
             try:
                 out = fut.result()
                 mb = os.path.getsize(out) / 1_048_576
-                # record final filename in metadata
                 clip["filename"] = Path(out).name
                 log("OK", f"  #{clip['rank']:>2} {clip['title'][:35]:<35}  "
                           f"post-processed ({mb:.1f} MB)")

@@ -20,31 +20,45 @@ def _jaccard(a: str, b: str) -> float:
     return len(sa & sb) / len(union) if union else 0.0
 
 
+def _is_interesting_non_speech(txt: str) -> bool:
+    """Check if a non-speech segment contains interesting audio events.
+
+    These events (laughter, applause, gasps, etc.) can add value to clips
+    and should NOT be filtered out.
+    """
+    clean = txt.strip().lower()
+    interesting_markers = (
+        "[laughter]", "(laughter)", "[applause]", "(applause)",
+        "[cheering]", "[crowd]", "[gasps]", "[sighs]",
+        "[clapping]", "(clapping)", "[sound effect]",
+    )
+    return any(marker in clean for marker in interesting_markers)
+
+
 def _is_likely_music(txt: str, no_speech_prob: float) -> bool:
     """
     Detect if transcribed text is likely pure music/instrumental rather than speech.
-    
+
     Conservative approach: only filter VERY confident music matches to avoid
     filtering actual speech that happens over background music.
-    
-    Heuristics (in order of confidence):
-    - Very high no_speech_prob (>0.75) = Whisper strongly says NOT speech
-    - Pure onomatopoeia/music sounds (la la, doo doo, etc.) 
-    - Stage direction markers like [instrumental], [music]
-    - NOT filtering short phrases or common words, as those may be real speech
+
+    IMPORTANT: Interesting non-speech events (laughter, applause, etc.)
+    are KEPT — only pure instrumental/music is filtered.
     """
     if not txt or not txt.strip():
         return False
-    
+
     clean = txt.strip().lower()
-    
+
+    # Never filter interesting non-speech events
+    if _is_interesting_non_speech(txt):
+        return False
+
     # Only use no_speech_prob as a STRONG filter (>0.75, not 0.5)
-    # Whisper's confidence needs to be very high that it's NOT speech
     if no_speech_prob > 0.75:
         return True
-    
-    # Pure music marker sounds: ONLY if ENTIRE segment is just these sounds
-    # (not mixed with other words)
+
+    # Pure music marker sounds
     music_markers = (
         r"la+(?:\s+la+)*|"
         r"na+(?:\s+na+)*|"
@@ -60,15 +74,15 @@ def _is_likely_music(txt: str, no_speech_prob: float) -> bool:
     )
     if re.match(f"^({music_markers})$", clean):
         return True
-    
-    # Explicit stage directions/markers that indicate non-speech sections
+
+    # Explicit stage directions for pure instrumental (NOT laughter/applause)
     if any(marker in clean for marker in [
         "[instrumental", "[music]", "[background music]",
         "(instrumental)", "(music)", "(singing)",
         "[singing]", "♪", "♫"
     ]):
         return True
-    
+
     return False
 
 

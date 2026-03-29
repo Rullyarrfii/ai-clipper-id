@@ -159,13 +159,29 @@ def transcribe(
             [{"word": w.word, "start": w.start, "end": w.end} for w in seg.words]
             if seg.words else []
         )
-        segments.append({
+        seg_data: dict[str, Any] = {
             "start": round(seg.start, 3),
             "end": round(seg.end, 3),
             "text": seg.text.strip(),
             "words": words,
             "no_speech_prob": round(seg.no_speech_prob, 4),
-        })
+        }
+        # Capture non-speech annotations from Whisper
+        # These include [music], [laughter], [applause], etc.
+        # which can be interesting for clip content
+        text_lower = seg.text.strip().lower()
+        is_non_speech = any(
+            marker in text_lower
+            for marker in (
+                "[music]", "[laughter]", "[applause]", "[cheering]",
+                "[singing]", "[crowd]", "(music)", "(laughter)",
+                "(applause)", "[background music]", "[sound effect]",
+                "[gasps]", "[sighs]", "[clapping]",
+            )
+        )
+        if is_non_speech:
+            seg_data["non_speech_event"] = True
+        segments.append(seg_data)
 
     elapsed = time.time() - t0
     duration = segments[-1]["end"] if segments else 0.0

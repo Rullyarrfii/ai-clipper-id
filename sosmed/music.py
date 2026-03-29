@@ -16,92 +16,28 @@ from typing import Any
 import requests
 
 from .utils import get_ffmpeg, log
+from .config import get_music_library, get_pixabay_settings
 
 
 # ── Royalty-free music library ───────────────────────────────────────────────
-# URLs point to royalty-free/Creative Commons music sources.
+# Loaded from config.yaml (or config.yaml.example)
 # Categories map to moods/vibes that match different clip content.
-#
-# These are placeholder URLs — users should download and place actual
-# music files in the music/ directory, then update MUSIC_LIBRARY paths.
-MUSIC_LIBRARY: list[dict[str, str]] = [
-    {
-        "id": "upbeat_pop",
-        "category": "upbeat",
-        "mood": "energetic, happy, motivational, fun",
-        "description": "Upbeat pop/electronic beat — great for tips, tutorials, success stories",
-        "file": "upbeat_pop.mp3",
-    },
-    {
-        "id": "chill_lofi",
-        "category": "chill",
-        "mood": "relaxed, calm, thoughtful, cozy",
-        "description": "Lo-fi hip hop chill beat — perfect for storytelling, explanations, reflections",
-        "file": "chill_lofi.mp3",
-    },
-    {
-        "id": "dramatic_cinematic",
-        "category": "dramatic",
-        "mood": "intense, serious, suspenseful, emotional",
-        "description": "Cinematic orchestral — for shocking reveals, serious topics, emotional moments",
-        "file": "dramatic_cinematic.mp3",
-    },
-    {
-        "id": "inspiring_ambient",
-        "category": "inspiring",
-        "mood": "hopeful, uplifting, inspirational, warm",
-        "description": "Ambient inspirational — for motivational content, success stories, advice",
-        "file": "inspiring_ambient.mp3",
-    },
-    {
-        "id": "tech_electronic",
-        "category": "tech",
-        "mood": "futuristic, modern, innovative, fast",
-        "description": "Electronic/tech beat — for tech topics, innovation, how-tos, demonstrations",
-        "file": "tech_electronic.mp3",
-    },
-    {
-        "id": "funny_quirky",
-        "category": "funny",
-        "mood": "comedic, playful, silly, lighthearted",
-        "description": "Quirky comedic — for funny moments, memes, roasts, lighthearted content",
-        "file": "funny_quirky.mp3",
-    },
-    {
-        "id": "sad_piano",
-        "category": "emotional",
-        "mood": "sad, melancholic, touching, sentimental",
-        "description": "Soft piano — for emotional stories, heartfelt moments, personal sharing",
-        "file": "sad_piano.mp3",
-    },
-    {
-        "id": "hype_trap",
-        "category": "hype",
-        "mood": "aggressive, confident, bold, powerful",
-        "description": "Trap/bass beat — for bold claims, confrontational takes, confidence, hype",
-        "file": "hype_trap.mp3",
-    },
-]
+MUSIC_LIBRARY: list[dict[str, str]] = get_music_library()
 
 
 # ── Pixabay search queries per music category ──────────────────────────────
 # Maps each library entry to a Pixabay search query + category filter.
+# Auto-generated from music library IDs.
 _PIXABAY_QUERIES: dict[str, dict[str, str]] = {
-    "upbeat_pop": {"q": "upbeat pop energetic", "category": "music"},
-    "chill_lofi": {"q": "lofi chill hip hop", "category": "music"},
-    "dramatic_cinematic": {"q": "cinematic dramatic orchestral", "category": "music"},
-    "inspiring_ambient": {"q": "inspirational ambient uplifting", "category": "music"},
-    "tech_electronic": {"q": "electronic technology modern", "category": "music"},
-    "funny_quirky": {"q": "funny quirky comedy", "category": "music"},
-    "sad_piano": {"q": "sad piano emotional", "category": "music"},
-    "hype_trap": {"q": "trap bass aggressive", "category": "music"},
+    entry["id"]: {"q": entry["id"].replace("_", " ") + " " + entry.get("category", ""), "category": "music"}
+    for entry in MUSIC_LIBRARY
 }
 
 
 def download_music_library(
     music_dir: str | Path = "music",
     api_key: str | None = None,
-    min_duration: int = 30,
+    min_duration: int | None = None,
 ) -> list[str]:
     """Download copyright-free music from Pixabay for each mood category.
 
@@ -113,7 +49,7 @@ def download_music_library(
     Args:
         music_dir: Directory to save music files into.
         api_key: Pixabay API key. Falls back to PIXABAY_API_KEY env var.
-        min_duration: Minimum track duration in seconds (default: 30).
+        min_duration: Minimum track duration in seconds. If None, uses config.
 
     Returns:
         List of downloaded file paths.
@@ -127,6 +63,12 @@ def download_music_library(
 
     music_path = Path(music_dir)
     music_path.mkdir(parents=True, exist_ok=True)
+
+    # Load Pixabay settings from config
+    pixabay_settings = get_pixabay_settings()
+    if min_duration is None:
+        min_duration = pixabay_settings.get("min_duration", 30)
+    per_page = pixabay_settings.get("per_page", 5)
 
     downloaded: list[str] = []
 
@@ -153,7 +95,7 @@ def download_music_library(
                     "key": api_key,
                     "q": query_info["q"],
                     "media_type": "music",
-                    "per_page": 5,
+                    "per_page": per_page,
                     "min_duration": min_duration,
                     "order": "popular",
                     "editors_choice": "true",
@@ -171,7 +113,7 @@ def download_music_library(
                         "key": api_key,
                         "q": query_info["q"],
                         "media_type": "music",
-                        "per_page": 5,
+                        "per_page": per_page,
                         "min_duration": min_duration,
                         "order": "popular",
                     },

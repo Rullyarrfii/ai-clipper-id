@@ -1,0 +1,196 @@
+"""
+Configuration loader for config.yaml
+"""
+
+import os
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .utils import log
+
+# Default config values (used if config.yaml doesn't exist)
+DEFAULT_CONFIG: dict[str, Any] = {
+    "music_library": [
+        {
+            "id": "upbeat_pop",
+            "category": "upbeat",
+            "mood": "energetic, happy, motivational, fun",
+            "description": "Upbeat pop/electronic beat — great for tips, tutorials, success stories",
+            "file": "upbeat_pop.mp3",
+        },
+        {
+            "id": "chill_lofi",
+            "category": "chill",
+            "mood": "relaxed, calm, thoughtful, cozy",
+            "description": "Lo-fi hip hop chill beat — perfect for storytelling, explanations, reflections",
+            "file": "chill_lofi.mp3",
+        },
+        {
+            "id": "dramatic_cinematic",
+            "category": "dramatic",
+            "mood": "intense, serious, suspenseful, emotional",
+            "description": "Cinematic orchestral — for shocking reveals, serious topics, emotional moments",
+            "file": "dramatic_cinematic.mp3",
+        },
+        {
+            "id": "inspiring_ambient",
+            "category": "inspiring",
+            "mood": "hopeful, uplifting, inspirational, warm",
+            "description": "Ambient inspirational — for motivational content, success stories, advice",
+            "file": "inspiring_ambient.mp3",
+        },
+        {
+            "id": "tech_electronic",
+            "category": "tech",
+            "mood": "futuristic, modern, innovative, fast",
+            "description": "Electronic/tech beat — for tech topics, innovation, how-tos, demonstrations",
+            "file": "tech_electronic.mp3",
+        },
+        {
+            "id": "funny_quirky",
+            "category": "funny",
+            "mood": "comedic, playful, silly, lighthearted",
+            "description": "Quirky comedic — for funny moments, memes, roasts, lighthearted content",
+            "file": "funny_quirky.mp3",
+        },
+        {
+            "id": "sad_piano",
+            "category": "emotional",
+            "mood": "sad, melancholic, touching, sentimental",
+            "description": "Soft piano — for emotional stories, heartfelt moments, personal sharing",
+            "file": "sad_piano.mp3",
+        },
+        {
+            "id": "hype_trap",
+            "category": "hype",
+            "mood": "aggressive, confident, bold, powerful",
+            "description": "Trap/bass beat — for bold claims, confrontational takes, confidence, hype",
+            "file": "hype_trap.mp3",
+        },
+    ],
+    "defaults": {
+        "whisper_model": "turbo",
+        "language": "id",
+        "min_clip_duration": 15,
+        "max_clip_duration": 180,
+        "max_clips": 10,
+        "min_score": 55,
+        "device": "auto",
+        "compute_type": "auto",
+        "batch_size": 16,
+        "vad_enabled": True,
+        "vad_min_silence_ms": 400,
+        "vad_speech_pad_ms": 200,
+        "chunk_duration": 360.0,
+        "chunk_overlap": 60.0,
+        "output_dir": "clips",
+        "subtitles_enabled": True,
+        "subtitle_position": "lower",
+        "crop_enabled": False,
+        "crop_target": "vertical",
+        "music_enabled": False,
+        "music_dir": "music",
+        "music_volume": 0.06,
+        "silence_removal_enabled": True,
+        "max_silence_duration": 1.5,
+    },
+    "pixabay": {
+        "min_duration": 30,
+        "per_page": 5,
+    },
+}
+
+_config_cache: dict[str, Any] | None = None
+
+
+def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    """
+    Load configuration from config.yaml.
+
+    Args:
+        config_path: Path to config file. If None, looks for:
+                     1. ./config.yaml
+                     2. ./config.yaml.example (fallback)
+
+    Returns:
+        Configuration dictionary with defaults merged in.
+    """
+    global _config_cache
+
+    if _config_cache is not None:
+        return _config_cache
+
+    if config_path is None:
+        config_path = Path("config.yaml")
+        if not config_path.exists():
+            example_path = Path("config.yaml.example")
+            if example_path.exists():
+                config_path = example_path
+                log("INFO", f"Using example config: {config_path}")
+            else:
+                log("INFO", "No config.yaml found, using defaults")
+                _config_cache = DEFAULT_CONFIG
+                return _config_cache
+
+    config_path = Path(config_path)
+
+    if not config_path.exists():
+        log("WARN", f"Config file not found: {config_path}, using defaults")
+        _config_cache = DEFAULT_CONFIG
+        return _config_cache
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            user_config = yaml.safe_load(f) or {}
+
+        # Merge with defaults
+        merged = _merge_configs(DEFAULT_CONFIG, user_config)
+        _config_cache = merged
+        log("OK", f"Config loaded: {config_path}")
+        return merged
+
+    except Exception as e:
+        log("ERROR", f"Failed to load config: {e}")
+        log("INFO", "Using default configuration")
+        _config_cache = DEFAULT_CONFIG
+        return _config_cache
+
+
+def _merge_configs(defaults: dict, user: dict) -> dict:
+    """Recursively merge user config into defaults."""
+    result = defaults.copy()
+
+    for key, value in user.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _merge_configs(result[key], value)
+        else:
+            result[key] = value
+
+    return result
+
+
+def get_music_library() -> list[dict[str, str]]:
+    """Get the configured music library."""
+    config = load_config()
+    return config.get("music_library", DEFAULT_CONFIG["music_library"])
+
+
+def get_defaults() -> dict[str, Any]:
+    """Get default CLI parameters."""
+    config = load_config()
+    return config.get("defaults", DEFAULT_CONFIG["defaults"])
+
+
+def get_pixabay_settings() -> dict[str, Any]:
+    """Get Pixabay download settings."""
+    config = load_config()
+    return config.get("pixabay", DEFAULT_CONFIG["pixabay"])
+
+
+def reload_config() -> dict[str, Any]:
+    """Force reload configuration from disk."""
+    global _config_cache
+    _config_cache = None
+    return load_config()

@@ -21,6 +21,7 @@ from .utils import (
     MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries,
     save_clips_to_disk, load_clips_with_internal_fields
 )
+from .config import get_defaults, load_config
 
 
 def _get_transcript_cache_path(video_path: str) -> Path:
@@ -123,6 +124,10 @@ def main() -> None:
     # Load .env file for API keys and config
     load_dotenv()
 
+    # Load configuration from config.yaml
+    load_config()
+    defaults = get_defaults()
+
     ap = argparse.ArgumentParser(
         description="AI Video Clipper — Indonesian-optimized, auto clip count",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -133,46 +138,50 @@ def main() -> None:
             "  ANTHROPIC_API_KEY    Anthropic Claude key\n"
             "  OPENAI_API_KEY       OpenAI key\n"
             "  OLLAMA_MODEL         Local Ollama model name (default: llama3.1)\n"
+            "\n"
+            "Configuration:\n"
+            "  Place config.yaml in project root to override defaults.\n"
+            "  See config.yaml.example for all options.\n"
         ),
     )
     ap.add_argument("video", help="Path to input video")
-    ap.add_argument("--model", default="turbo",
+    ap.add_argument("--model", default=defaults["whisper_model"],
                     choices=["tiny", "base", "small", "medium",
                              "large-v2", "large-v3", "distil-large-v3", "turbo"],
-                    help="Whisper model size (default: turbo)")
-    ap.add_argument("--lang", default="id",
-                    help="Language code — 'id' Indonesian, 'en' English, "
-                         "or None for auto-detect (default: id)")
-    ap.add_argument("--min", type=int, default=15,
-                    help="Min clip duration in seconds (default: 15)")
-    ap.add_argument("--max", type=int, default=180,
-                    help="Max clip duration in seconds (default: 180)")
-    ap.add_argument("--max-clips", type=int, default=MAX_CLIPS_HARD_LIMIT,
-                    help=f"Maximum number of clips (default: {MAX_CLIPS_HARD_LIMIT})")
-    ap.add_argument("--min-score", type=int, default=55,
-                    help="Minimum engagement score to keep a clip (default: 55)")
-    ap.add_argument("--device", default="auto",
+                    help=f"Whisper model size (default: {defaults['whisper_model']})")
+    ap.add_argument("--lang", default=defaults["language"],
+                    help=f"Language code — 'id' Indonesian, 'en' English, "
+                         f"or None for auto-detect (default: {defaults['language']})")
+    ap.add_argument("--min", type=int, default=defaults["min_clip_duration"],
+                    help=f"Min clip duration in seconds (default: {defaults['min_clip_duration']})")
+    ap.add_argument("--max", type=int, default=defaults["max_clip_duration"],
+                    help=f"Max clip duration in seconds (default: {defaults['max_clip_duration']})")
+    ap.add_argument("--max-clips", type=int, default=defaults["max_clips"],
+                    help=f"Maximum number of clips (default: {defaults['max_clips']})")
+    ap.add_argument("--min-score", type=int, default=defaults["min_score"],
+                    help=f"Minimum engagement score to keep a clip (default: {defaults['min_score']})")
+    ap.add_argument("--device", default=defaults["device"],
                     choices=["auto", "cuda", "cpu"],
-                    help="Compute device (default: auto)")
-    ap.add_argument("--compute-type", default="auto",
+                    help=f"Compute device (default: {defaults['device']})")
+    ap.add_argument("--compute-type", default=defaults["compute_type"],
                     choices=["auto", "float16", "int8", "int8_float16"],
-                    help="Compute type (default: auto)")
+                    help=f"Compute type (default: {defaults['compute_type']})")
     ap.add_argument("--no-vad", action="store_true",
-                    help="Disable VAD filtering for transcription")
-    ap.add_argument("--vad-min-silence", type=int, default=400,
-                    help="VAD min silence duration in ms (default: 400)")
-    ap.add_argument("--vad-speech-pad", type=int, default=200,
-                    help="VAD speech padding in ms (default: 200)")
-    ap.add_argument("--batch", type=int, default=16,
-                    help="Whisper batch size (default: 16; lower if OOM)")
+                    help="Disable VAD filtering for transcription" if defaults["vad_enabled"] else " (VAD disabled by config)")
+    ap.add_argument("--vad-min-silence", type=int, default=defaults["vad_min_silence_ms"],
+                    help=f"VAD min silence duration in ms (default: {defaults['vad_min_silence_ms']})")
+    ap.add_argument("--vad-speech-pad", type=int, default=defaults["vad_speech_pad_ms"],
+                    help=f"VAD speech padding in ms (default: {defaults['vad_speech_pad_ms']})")
+    ap.add_argument("--batch", type=int, default=defaults["batch_size"],
+                    help=f"Whisper batch size (default: {defaults['batch_size']}; lower if OOM)")
     ap.add_argument("--workers", type=int, default=1,
                     help="(ignored) previously used for parallel ffmpeg workers")
-    ap.add_argument("--chunk-duration", type=float, default=360.0,
-                    help="LLM chunk duration in seconds (default: 360)")
-    ap.add_argument("--chunk-overlap", type=float, default=60.0,
-                    help="Overlap between chunks in seconds (default: 60)")
-    ap.add_argument("--output", default="clips",
-                    help="Output directory (default: ./clips)")
+    ap.add_argument("--chunk-duration", type=float, default=defaults["chunk_duration"],
+                    help=f"LLM chunk duration in seconds (default: {defaults['chunk_duration']})")
+    ap.add_argument("--chunk-overlap", type=float, default=defaults["chunk_overlap"],
+                    help=f"Overlap between chunks in seconds (default: {defaults['chunk_overlap']})")
+    ap.add_argument("--output", default=defaults["output_dir"],
+                    help=f"Output directory (default: ./{defaults['output_dir']}/)")
     ap.add_argument("--save-transcript", action="store_true",
                     help="Save full transcript JSON")
     ap.add_argument("--api-key", default=None,
@@ -182,12 +191,12 @@ def main() -> None:
 
     # ── Post-processing options ──────────────────────────────────────────
     ap.add_argument("--subtitles", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="TikTok-style word-by-word subtitles "
-                         "(default: on, --no-subtitles to disable)")
-    ap.add_argument("--subtitle-position", default="lower",
+                    default=defaults["subtitles_enabled"],
+                    help=f"TikTok-style word-by-word subtitles "
+                         f"(default: {'on' if defaults['subtitles_enabled'] else 'off'})")
+    ap.add_argument("--subtitle-position", default=defaults["subtitle_position"],
                     choices=["center", "upper", "lower"],
-                    help="Subtitle position (default: lower)")
+                    help=f"Subtitle position (default: {defaults['subtitle_position']})")
     ap.add_argument("--orientation", default="auto",
                     choices=["auto", "portrait", "landscape"],
                     help="Force output orientation: portrait (9:16), landscape (16:9), "
@@ -195,29 +204,30 @@ def main() -> None:
 
     # ── Person detection & crop ──────────────────────────────────────────
     ap.add_argument("--crop", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Enable YOLO person detection + close-up crop "
-                         "(default: off, --crop to enable)")
-    ap.add_argument("--crop-target", default="vertical",
+                    default=defaults["crop_enabled"],
+                    help=f"Enable YOLO person detection + close-up crop "
+                         f"(default: {'on' if defaults['crop_enabled'] else 'off'})")
+    ap.add_argument("--crop-target", default=defaults["crop_target"],
                     choices=["vertical", "horizontal", "square"],
-                    help="Target aspect ratio for crop (default: vertical = 9:16)")
+                    help=f"Target aspect ratio for crop (default: {defaults['crop_target']})")
 
     # ── Background music ─────────────────────────────────────────────────
     ap.add_argument("--music", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Add background music matched to clip mood "
-                         "(default: off, --music to enable)")
-    ap.add_argument("--music-dir", default=None,
-                    help="Directory containing music files (default: ./music/)")
-    ap.add_argument("--music-volume", type=float, default=0.06,
-                    help="Background music volume 0.0-1.0 (default: 0.06 = very quiet)")
+                    default=defaults["music_enabled"],
+                    help=f"Add background music matched to clip mood "
+                         f"(default: {'on' if defaults['music_enabled'] else 'off'})")
+    ap.add_argument("--music-dir", default=defaults["music_dir"],
+                    help=f"Directory containing music files (default: ./{defaults['music_dir']}/)")
+    ap.add_argument("--music-volume", type=float, default=defaults["music_volume"],
+                    help=f"Background music volume 0.0-1.0 (default: {defaults['music_volume']})")
 
     # ── Silence removal ──────────────────────────────────────────────────
     ap.add_argument("--remove-silence", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Remove silent gaps from clips (default: on)")
-    ap.add_argument("--max-silence", type=float, default=1.5,
-                    help="Maximum silence gap in seconds before removal (default: 1.5)")
+                    default=defaults["silence_removal_enabled"],
+                    help=f"Remove silent gaps from clips "
+                         f"(default: {'on' if defaults['silence_removal_enabled'] else 'off'})")
+    ap.add_argument("--max-silence", type=float, default=defaults["max_silence_duration"],
+                    help=f"Maximum silence gap in seconds before removal (default: {defaults['max_silence_duration']})")
 
     # ── Testing options ──────────────────────────────────────────────────
     ap.add_argument("--example", action="store_true",

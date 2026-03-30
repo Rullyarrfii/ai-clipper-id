@@ -8,7 +8,6 @@ Usage:
 
 import argparse
 import json
-import re
 import sys
 import time
 from pathlib import Path
@@ -48,17 +47,13 @@ def _build_full_video_clip(
     if segments:
         clip_start = max(0.0, min(float(segments[0].get("start", 0.0)), video_duration))
 
-    default_title = re.sub(r"[_-]+", " ", video.stem).strip() or video.stem
-    final_title = title if title else default_title
-    final_caption = caption if caption else default_title
-
     return {
         "rank": 1,
         "start": clip_start,
         "end": video_duration,
-        "title": final_title,
-        "topic": final_title,
-        "caption": final_caption,
+        "title": title or "",
+        "topic": "",
+        "caption": caption or "",
         "reason": "Single-video mode returns the full source video.",
         "hook": "",
         "score_hook": 100,

@@ -103,6 +103,9 @@ def process_single_video(
     title: str | None = None,
     caption: str | None = None,
     cta: bool | None = None,
+    music: bool = False,
+    music_dir: str = "music",
+    music_volume: float = 0.06,
 ) -> dict:
     """
     Process a single video and extract the best clip.
@@ -226,11 +229,34 @@ def process_single_video(
         log("ERROR", "Failed to extract clip")
         sys.exit(1)
 
+    # ── 4b. Prepare background music ─────────────────────────────────────
+    music_entries: dict = {}
+    if music:
+        from pathlib import Path as _Path
+        from .music import get_available_music, download_music_library
+        available = get_available_music(music_dir)
+        if not available:
+            log("INFO", "No music files found — attempting auto-download from Pixabay...")
+            downloaded = download_music_library(music_dir=music_dir)
+            if downloaded:
+                available = get_available_music(music_dir)
+        if not available:
+            assets_music = _Path(__file__).parent.parent / "assets" / "background_music.mp3"
+            if assets_music.exists():
+                log("INFO", f"Using fallback background music from assets: {assets_music}")
+                fallback = {"id": "background_music", "file": str(assets_music), "description": "Background music", "mood": "neutral"}
+                music_entries = {best_clip.get("rank", 1): fallback}
+            else:
+                log("WARN", "No background music files found. Skipping music.")
+        else:
+            fallback = available[0]
+            music_entries = {best_clip.get("rank", 1): fallback}
+
     # ── 5. Post-process with subtitles ──────────────────────────────────
     cta_defaults = get_cta_settings()
     cta_cfg = {**cta_defaults, "enabled": cta if cta is not None else cta_defaults.get("enabled", False)}
 
-    if (subtitles or cta_cfg["enabled"]) and raw_outputs:
+    if (subtitles or cta_cfg["enabled"] or music) and raw_outputs:
         log("INFO", "Adding subtitles overlay...")
         outputs = postprocess_clips(
             raw_outputs,
@@ -240,6 +266,9 @@ def process_single_video(
             subtitles=subtitles,
             subtitle_position=subtitle_position,
             subtitle_margin_pct=subtitle_margin_pct,
+            enable_music=music,
+            music_entries=music_entries,
+            music_volume=music_volume,
             cta_config=cta_cfg,
         )
     else:
@@ -425,6 +454,13 @@ def main() -> None:
                     default=_cta_defaults.get("enabled", False),
                     help="Append Instagram follow CTA at the end "
                          f"(default: {'on' if _cta_defaults.get('enabled') else 'off'})")
+    ap.add_argument("--music", action=argparse.BooleanOptionalAction,
+                    default=defaults.get("music_enabled", False),
+                    help="Add background music (default: from config or off)")
+    ap.add_argument("--music-dir", default=defaults.get("music_dir", "music"),
+                    help="Directory containing music files (default: music/)")
+    ap.add_argument("--music-volume", type=float, default=defaults.get("music_volume", 0.06),
+                    help="Background music volume 0.0-1.0 (default: 0.06)")
 
     args = ap.parse_args()
     lang = None if args.lang.lower() == "none" else args.lang
@@ -449,6 +485,9 @@ def main() -> None:
         subtitle_position=args.subtitle_position,
         subtitle_margin_pct=args.subtitle_margin,
         cta=args.cta,
+        music=args.music,
+        music_dir=args.music_dir,
+        music_volume=args.music_volume,
     )
 
     input_path = Path(args.video)

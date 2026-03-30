@@ -70,6 +70,11 @@ def _prepare_music(clips, args):
             available = get_available_music(music_dir)
 
     if not available:
+        assets_music = Path(__file__).parent.parent / "assets" / "background_music.mp3"
+        if assets_music.exists():
+            log("INFO", f"Using fallback background music from assets: {assets_music}")
+            fallback = {"id": "background_music", "file": str(assets_music), "description": "Background music", "mood": "neutral"}
+            return {c.get("rank", 0): fallback for c in clips}
         log("WARN", "No background music files found. "
                      "Set PIXABAY_API_KEY env var to auto-download, "
                      "or place .mp3 files in music/ directory. Skipping music.")

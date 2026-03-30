@@ -80,27 +80,52 @@ def append_instagram_cta(
     # ── Accent colour ─────────────────────────────────────────────────────────
     ACCENT = "0x29B6F6"   # light blue
 
+    # ── Reference dimension: min(w,h) prevents text overflow on narrow canvases
+    ref = min(w, h)
+    is_portrait = h > w
+
     # ── Font sizes ────────────────────────────────────────────────────────────
-    name_fs = max(58, int(h * 0.068))   # account name  (big & clear)
-    user_fs = max(38, int(h * 0.040))   # @username     (medium)
-    btn_fs  = max(30, int(h * 0.032))   # "Follow" inside button
+    name_fs = max(64, int(ref * 0.082))   # ~89 px on ref=1080
+    user_fs = max(44, int(ref * 0.054))   # ~58 px
+    btn_fs  = max(36, int(ref * 0.042))   # ~45 px
 
-    # ── Instagram logo (PNG overlay) ──────────────────────────────────────────
-    logo_path  = Path(__file__).parent.parent / "assets" / "iglogo.png"
-    logo_size  = max(120, int(w * 0.148))   # ~160 px on 1080 — clear but compact
-    icon_top   = int(h * 0.180)             # top edge of the logo (positioned lower for better balance)
+    # ── Instagram logo — bigger on portrait ──────────────────────────────────
+    logo_path = Path(__file__).parent.parent / "assets" / "iglogo.png"
+    if is_portrait:
+        logo_size = max(180, int(ref * 0.230))  # ~248 px on ref=1080
+    else:
+        logo_size = max(130, int(ref * 0.160))  # ~173 px
 
-    # ── Vertical positions ────────────────────────────────────────────────────
-    # drawtext y is the text BASELINE — cap-height sits ~75 % of font size ABOVE it,
-    # so name_y must be set well below the logo bottom to avoid overlap.
-    name_y = int(h * 0.420)   # baseline; visual top ≈ name_y - 0.75*name_fs
-    user_y = int(h * 0.500)
+    # ── Button dimensions — horizontal padding so it feels like a real button ─
+    btn_padding_x = max(40, int(ref * 0.060))   # ~65 px per side
+    btn_h = max(70, int(ref * 0.085))           # ~92 px
+    # Minimum width = "Follow" text width + 2× padding (rough: 6 chars × ~0.6×btn_fs)
+    btn_w = max(int(btn_fs * 6 * 0.6) + 2 * btn_padding_x, max(260, int(ref * 0.420)))
+    btn_x = (w - btn_w) // 2
 
-    btn_h  = max(60, int(h * 0.068))
-    btn_w  = max(200, int(w * 0.400))
-    btn_x  = (w - btn_w) // 2
-    btn_y  = int(h * 0.585)
-    btn_ty = btn_y + (btn_h - btn_fs) // 2
+    # ── Vertical layout — gap values are pixel distances between visual edges ─
+    # drawtext y = TOP of the text box (cap-height), so each element occupies
+    # rows [y .. y + font_size].  Gaps are measured between the bottom of one
+    # element and the top of the next.
+    gap_logo_name = max(12, int(ref * 0.018))   # logo bottom → name top  (tight)
+    gap_name_user = max(10, int(ref * 0.014))   # name bottom → username top
+    gap_user_btn  = max(32, int(ref * 0.046))   # username bottom → button top
+
+    # Total group height, centered vertically in the frame
+    group_h = (
+        logo_size
+        + gap_logo_name + name_fs
+        + gap_name_user + user_fs
+        + gap_user_btn  + btn_h
+    )
+    group_top = (h - group_h) // 2
+
+    # y = top of each element
+    icon_top = group_top
+    name_y   = icon_top  + logo_size    + gap_logo_name
+    user_y   = name_y    + name_fs      + gap_name_user
+    btn_y    = user_y    + user_fs      + gap_user_btn
+    btn_ty   = btn_y + (btn_h - btn_fs) // 2
 
     # ── Animation timing (t = seconds into CTA segment) ──────────────────────
     t_icon = 0.10
@@ -159,12 +184,9 @@ def append_instagram_cta(
     # Click plays at t_btn seconds into the CTA portion of the full output
     click_ms = int((xfade_offset + t_btn) * 1000)
 
-    # Synthetic click: sharp transient (high-freq + sub)
-    click_expr = (
-        "0.8*sin(2*PI*1200*t)*exp(-90*t)"
-        "+0.4*sin(2*PI*2800*t)*exp(-110*t)"
-        "+0.2*sin(2*PI*600*t)*exp(-70*t)"
-    )
+    # Click SFX file (assets/click.mp3)
+    click_sfx_path = Path(__file__).parent.parent / "assets" / "click.mp3"
+    use_click_file = click_sfx_path.exists()
 
     # ── Build FFmpeg command ──────────────────────────────────────────────────
     ffmpeg = get_ffmpeg()
@@ -179,11 +201,19 @@ def append_instagram_cta(
         "-i", f"color=c=black:size={w}x{h}:rate={fps:.4f}",
     ])
 
-    # [2] click sound  (lavfi aevalsrc, very short)
-    cmd.extend([
-        "-f", "lavfi", "-t", "0.15",
-        "-i", f"aevalsrc={click_expr}:s=44100",
-    ])
+    # [2] click sound — real SFX file if available, else synthetic fallback
+    if use_click_file:
+        cmd.extend(["-i", str(click_sfx_path)])
+    else:
+        click_expr = (
+            "0.8*sin(2*PI*1200*t)*exp(-90*t)"
+            "+0.4*sin(2*PI*2800*t)*exp(-110*t)"
+            "+0.2*sin(2*PI*600*t)*exp(-70*t)"
+        )
+        cmd.extend([
+            "-f", "lavfi", "-t", "0.15",
+            "-i", f"aevalsrc={click_expr}:s=44100",
+        ])
 
     # [3] Instagram logo PNG (looped for the CTA duration)
     cmd.extend(["-loop", "1", "-t", f"{duration:.4f}", "-i", str(logo_path)])
@@ -218,6 +248,12 @@ def append_instagram_cta(
     )
 
     # Audio path
+    # click_pre: trim real SFX to 0.5 s so it doesn't bleed into the rest
+    if use_click_file:
+        click_pre = "[2:a]atrim=0:0.5,asetpts=PTS-STARTPTS"
+    else:
+        click_pre = "[2:a]"  # synthetic aevalsrc is already short
+
     if has_audio:
         audio_fade_st  = max(0.0, main_dur - fade_duration - 0.15)
         audio_fade_dur = fade_duration + 0.15
@@ -225,14 +261,25 @@ def append_instagram_cta(
             f"[0:a]afade=t=out:st={audio_fade_st:.4f}:d={audio_fade_dur:.4f}"
             f",apad=whole_dur={total_dur:.4f}[main_a]"
         )
-        fc.append(f"[2:a]adelay=delays={click_ms}:all=1[click_a]")
+        if use_click_file:
+            fc.append(f"{click_pre}[click_trim]")
+            fc.append(f"[click_trim]adelay=delays={click_ms}:all=1[click_a]")
+        else:
+            fc.append(f"{click_pre}adelay=delays={click_ms}:all=1[click_a]")
         fc.append("[main_a][click_a]amix=inputs=2:duration=first[aout]")
     else:
         # No original audio — just place the click with silence padding
-        fc.append(
-            f"[2:a]adelay=delays={click_ms}:all=1"
-            f",apad=whole_dur={total_dur:.4f}[aout]"
-        )
+        if use_click_file:
+            fc.append(f"{click_pre}[click_trim]")
+            fc.append(
+                f"[click_trim]adelay=delays={click_ms}:all=1"
+                f",apad=whole_dur={total_dur:.4f}[aout]"
+            )
+        else:
+            fc.append(
+                f"{click_pre}adelay=delays={click_ms}:all=1"
+                f",apad=whole_dur={total_dur:.4f}[aout]"
+            )
 
     cmd.extend(["-filter_complex", ";".join(fc)])
     cmd.extend(["-map", "[vout]", "-map", "[aout]"])

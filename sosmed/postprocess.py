@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from .music import build_music_filter
 from .subtitles import generate_ass_subtitles, generate_title_overlay
 from .utils import get_ffmpeg, get_ffprobe, log
 
@@ -173,12 +174,20 @@ def _postprocess_one(
         log("DEBUG", f"Clip #{clip.get('rank')}: {src_w}x{src_h} → {out_w}x{out_h} ({orientation})")
         # Only add scale when the source dimensions don't already match the target
         if (src_w, src_h) != (out_w, out_h):
-            # Scale to fill (crop-to-fill, no black bars): scale up so the
-            # shorter dimension meets the target, then center-crop the overflow.
-            orient_scale_filter = (
-                f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
-                f"crop={out_w}:{out_h}"
-            )
+            if enable_crop:
+                # Scale to fill (crop-to-fill, no black bars): scale up so the
+                # shorter dimension meets the target, then center-crop the overflow.
+                orient_scale_filter = (
+                    f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                    f"crop={out_w}:{out_h}"
+                )
+            else:
+                # Scale to fit with black bars (letterbox/pillarbox): scale down
+                # so the larger dimension meets the target, pad the remaining space.
+                orient_scale_filter = (
+                    f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+                    f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2"
+                )
         else:
             log("DEBUG", f"Clip #{clip.get('rank')}: source already matches target, no scale needed")
     else:
@@ -374,7 +383,7 @@ def _postprocess_one(
 
     # Audio loudnorm
     if has_audio:
-        afilters.append("loudnorm=I=-14:LRA=10:TP=-1.5")
+        afilters.append("loudnorm=I=-9:LRA=7:TP=-1")
 
     if has_audio and afilters:
         afilter_str = ",".join(afilters)
@@ -382,20 +391,8 @@ def _postprocess_one(
             # Mix with background music
             filter_parts.append(f"{current_a_label}{afilter_str}[voice]")
 
-            # Music filter: trim, fade, volume
-            fade_in = min(1.0, clip_duration * 0.1)
-            fade_out = min(2.0, clip_duration * 0.15)
-            fade_out_start = max(0, clip_duration - fade_out)
-            music_filter = (
-                f"[{music_input_idx}:a]"
-                f"atrim=0:{clip_duration:.3f},"
-                f"afade=t=in:st=0:d={fade_in:.2f},"
-                f"afade=t=out:st={fade_out_start:.2f}:d={fade_out:.2f},"
-                f"volume={music_volume:.3f}"
-                f"[bgm]"
-            )
-            filter_parts.append(music_filter)
-            filter_parts.append("[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]")
+            filter_parts.append(build_music_filter(music_input_idx, clip_duration, music_volume))
+            filter_parts.append("[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]")
         else:
             filter_parts.append(f"{current_a_label}{afilter_str}[aout]")
 

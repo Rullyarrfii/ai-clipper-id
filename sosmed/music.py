@@ -327,40 +327,115 @@ def match_music_batch(
 
 
 def build_music_filter(
-    music_path: str,
+    music_idx: int,
     clip_duration: float,
     volume: float = 0.06,
-) -> tuple[list[str], str]:
-    """Build FFmpeg inputs and filter for mixing background music.
+) -> str:
+    """Build FFmpeg filter string for the background music stream.
 
-    The music is:
-    - Looped if shorter than clip duration
-    - Faded in over first 1s and out over last 2s
-    - Mixed at very low volume (default 6% = barely audible vibe)
-    - Trimmed to match clip duration
+    The music is looped, trimmed to clip duration, faded in/out, and
+    attenuated to the given volume. Output label is [bgm].
 
     Args:
-        music_path: Path to background music file
-        clip_duration: Duration of the clip in seconds
-        volume: Music volume (0.0–1.0), default 0.06 (very quiet)
+        music_idx: FFmpeg input index of the music file (e.g. 1 for second -i).
+        clip_duration: Duration of the clip in seconds.
+        volume: Music volume (0.0–1.0), default 0.06 (very quiet).
 
     Returns:
-        (extra_inputs, filter_string) to add to FFmpeg command
+        Filter string to include in filter_complex.
     """
     fade_in = min(1.0, clip_duration * 0.1)
     fade_out = min(2.0, clip_duration * 0.15)
     fade_out_start = max(0, clip_duration - fade_out)
 
-    extra_inputs = ["-stream_loop", "-1", "-i", music_path]
-
-    # Music filter: trim, fade, volume, then mix with original audio
-    music_filter = (
-        f"[{{music_idx}}:a]"
+    return (
+        f"[{music_idx}:a]"
+        f"aloop=loop=-1:size=2e+09,"
         f"atrim=0:{clip_duration:.3f},"
+        f"asetpts=PTS-STARTPTS,"
         f"afade=t=in:st=0:d={fade_in:.2f},"
         f"afade=t=out:st={fade_out_start:.2f}:d={fade_out:.2f},"
         f"volume={volume:.3f}"
         f"[bgm]"
     )
 
-    return extra_inputs, music_filter
+
+def apply_music_to_clip(
+    clip_path: str,
+    output_path: str,
+    music_path: str,
+    music_volume: float = 0.06,
+) -> bool:
+    """Mix background music into an existing video clip.
+
+    Main audio is loudnorm-normalized (loud target: -9 LUFS) then music is
+    added additively (amix normalize=0) so voice volume is not reduced.
+
+    Args:
+        clip_path: Input video file path.
+        output_path: Output video file path (can be same as input).
+        music_path: Background music file path.
+        music_volume: Music volume (0.0–1.0). Default 0.06 (very quiet).
+
+    Returns:
+        True on success, False on failure.
+    """
+    import json
+    import tempfile
+
+    from .utils import get_ffprobe
+
+    # Get clip duration via ffprobe
+    try:
+        result = subprocess.run(
+            [
+                get_ffprobe(), "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                clip_path,
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        duration = float(json.loads(result.stdout).get("format", {}).get("duration", 0))
+    except Exception as e:
+        log("WARN", f"Could not determine duration for {clip_path}: {e}")
+        return False
+
+    if duration <= 0:
+        log("WARN", f"Zero duration for {clip_path}, skipping music")
+        return False
+
+    voice_filter = "[0:a]loudnorm=I=-9:LRA=7:TP=-1[voice]"
+    music_filter = build_music_filter(1, duration, music_volume)
+    mix_filter = "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp_out = tmp.name
+
+    ffmpeg = get_ffmpeg()
+    cmd = [
+        ffmpeg, "-y", "-hide_banner",
+        "-i", clip_path,
+        "-stream_loop", "-1", "-i", music_path,
+        "-filter_complex", f"{voice_filter};{music_filter};{mix_filter}",
+        "-map", "0:v:0",
+        "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        "-movflags", "+faststart",
+        "-loglevel", "error",
+        tmp_out,
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        Path(tmp_out).replace(output_path)
+        return True
+    except subprocess.CalledProcessError as e:
+        log("ERROR", f"Music mixing failed: {e.stderr[:300] if e.stderr else str(e)}")
+        try:
+            Path(tmp_out).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False

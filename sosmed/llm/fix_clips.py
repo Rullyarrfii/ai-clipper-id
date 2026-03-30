@@ -267,11 +267,12 @@ def translate_subtitle_words(
     llm_model: str | None = None,
     api_key: str | None = None,
     max_words_per_group: int = 5,
+    fix_errors: bool = True,
 ) -> list[dict]:
     """
-    Translate word-level subtitle entries to Indonesian.
+    Translate word-level subtitle entries to Indonesian, optionally fixing transcription errors.
 
-    Groups ``words`` into short phrases, asks the LLM to translate each
+    Groups ``words`` into short phrases, asks the LLM to translate (and optionally fix) each
     phrase, then redistributes the original timestamps proportionally
     across the translated words.
 
@@ -282,6 +283,8 @@ def translate_subtitle_words(
         llm_model: LLM model override.
         api_key: API key override.
         max_words_per_group: Max source words per subtitle phrase group.
+        fix_errors: If True, use LLM to fix Whisper transcription errors + translate.
+                   If False, only translate existing text.
 
     Returns:
         Translated word list with the same ``{"word", "start", "end"}`` shape.
@@ -311,13 +314,22 @@ def translate_subtitle_words(
         for i, grp in enumerate(groups)
     ]
 
-    prompt_text = _read_prompt("Translate Subtitle Phrases")
+    # Choose prompt based on whether we're fixing errors or just translating
+    if fix_errors:
+        prompt_text = _read_prompt("Fix and Translate Subtitle Phrases")
+        system_message = (
+            "You are a professional subtitle translator and transcription editor. "
+            "Fix Whisper transcription errors and translate spoken content to natural Indonesian."
+        )
+    else:
+        prompt_text = _read_prompt("Translate Subtitle Phrases")
+        system_message = (
+            "You are a professional subtitle translator. "
+            "Translate spoken Indonesian-language content accurately and naturally."
+        )
+
     phrases_json = json.dumps(phrases, ensure_ascii=False, indent=2)
     user_message = f"{prompt_text}\n\nPhrases to translate:\n{phrases_json}"
-    system_message = (
-        "You are a professional subtitle translator. "
-        "Translate spoken Indonesian-language content accurately and naturally."
-    )
 
     result = call_llm(system_message, user_message, api_key, llm_model)
 
@@ -362,7 +374,7 @@ def translate_subtitle_words(
                 "end": phrase_start + (j + 1) * word_dur,
             })
 
-    log("OK", f"Subtitle translation: {len(words)} original words → {len(translated_words)} translated words")
+    log("OK", f"Subtitle {'fix+translation' if fix_errors else 'translation'}: {len(words)} original words → {len(translated_words)} translated words")
     return translated_words
 
 

@@ -100,11 +100,11 @@ def _prepare_subtitles(clips, segments, args, detected_language):
     from .subtitles import get_clip_words
     from .process_single import _should_translate_to_indonesian
     need_translate = _should_translate_to_indonesian(detected_language)
-    if need_translate:
-        log("INFO", "Translating subtitle words to Indonesian for all clips...")
-        from .llm import translate_subtitle_words
-    else:
-        log("INFO", "Skipping subtitle translation (detected Indonesian audio)")
+    
+    # Always enable fix_errors - even if Indonesian, fix Whisper transcription errors
+    log("INFO", "Fixing Whisper transcription errors and translating subtitles to Indonesian...")
+    from .llm import translate_subtitle_words
+    
     for clip in clips:
         try:
             raw_words = get_clip_words(
@@ -112,14 +112,13 @@ def _prepare_subtitles(clips, segments, args, detected_language):
                 clip_start=clip["start"],
                 clip_end=clip["end"],
             )
-            if need_translate:
-                clip["_subtitle_words"] = translate_subtitle_words(
-                    raw_words,
-                    llm_model=args.llm_model,
-                    api_key=args.api_key,
-                )
-            else:
-                clip["_subtitle_words"] = raw_words
+            # Always use fix_errors=True to fix Whisper mistakes
+            clip["_subtitle_words"] = translate_subtitle_words(
+                raw_words,
+                llm_model=args.llm_model,
+                api_key=args.api_key,
+                fix_errors=True,  # Enable Whisper error fixing
+            )
         except Exception as e:
             log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
             clip["_subtitle_words"] = []

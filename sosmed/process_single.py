@@ -200,16 +200,24 @@ def process_single_video(
             clip_end=best_clip["end"],
         )
         if _should_translate_to_indonesian(detected_language):
-            log("INFO", "Translating subtitle words to Indonesian...")
+            log("INFO", "Translating subtitle words to Indonesian (with Whisper error fixing)...")
             best_clip["_subtitle_words"] = translate_subtitle_words(
                 raw_words,
                 llm_model=llm_model,
                 api_key=api_key,
+                fix_errors=True,  # Enable Whisper error fixing
             )
             log("OK", f"Subtitle translation complete: {len(best_clip['_subtitle_words'])} words")
         else:
-            best_clip["_subtitle_words"] = raw_words
-            log("INFO", "Skipping subtitle translation because Whisper detected Indonesian")
+            log("INFO", "Whisper detected Indonesian, but still fixing transcription errors...")
+            # Even if language is Indonesian, still fix transcription errors
+            best_clip["_subtitle_words"] = translate_subtitle_words(
+                raw_words,
+                llm_model=llm_model,
+                api_key=api_key,
+                fix_errors=True,  # Enable Whisper error fixing
+            )
+            log("OK", f"Subtitle fixing complete: {len(best_clip['_subtitle_words'])} words")
 
     # ── 4. Extract best clip ─────────────────────────────────────────────────
     log("INFO", "Extracting best clip...")

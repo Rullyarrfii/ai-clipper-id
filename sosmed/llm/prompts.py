@@ -100,18 +100,63 @@ Input:  [{"id": 0, "text": "oh itu menarik sekali", "start": 0.0, "end": 1.5}]
 Output: [{"id": 0, "text": "Oh, itu menarik sekali.", "start": 0.0, "end": 1.5}]
 
 Return ONLY a JSON array with the exact same structure.
+""",
+
+    "Fix and Translate Subtitle Phrases": """Given subtitle phrases from Whisper transcription in JSON format, FIX transcription errors AND translate to Indonesian (Bahasa Indonesia).
+
+Whisper often makes mistakes like:
+- Wrong words due to similar sounds (e.g., "AI" heard as "ai", "email" as "imei")
+- Missing punctuation
+- Incorrect proper nouns (names, brands, technical terms)
+- Run-on sentences without breaks
+- Misheard Indonesian words (e.g., "nggak" as "enggak", "buat" as "buah")
+
+Input format: [{"id": 0, "text": "some phrase", "start": 0.5, "end": 2.0}, ...]
+
+Your tasks:
+1. FIX any transcription errors based on context
+2. Translate the corrected text to Indonesian (if not already Indonesian)
+3. Add natural punctuation: periods (.), commas (,), question marks (?), exclamation marks (!)
+4. Keep the meaning and tone natural and conversational
+
+Rules:
+- Keep "id", "start", "end" fields exactly unchanged
+- Maintain roughly the same word count — you can adjust word boundaries for natural Indonesian but don't add/remove entire concepts
+- Fix proper nouns, technical terms, and brand names based on context
+- Add appropriate punctuation for spoken content
+- Keep the exact same number of items in the output array
+- If text is already correct Indonesian, just add punctuation and return unchanged
+
+Example:
+Input:  [{"id": 0, "text": "jadi gini ya ai tuh sekarang canggih banget", "start": 0.0, "end": 2.5}]
+Output: [{"id": 0, "text": "Jadi gini, ya. AI tuh sekarang canggih banget.", "start": 0.0, "end": 2.5}]
+
+Example with errors:
+Input:  [{"id": 0, "text": "kita bisa pakai gpt untuk ngerjain tugas", "start": 0.0, "end": 2.0}]
+Output: [{"id": 0, "text": "Kita bisa pakai GPT untuk ngerjain tugas.", "start": 0.0, "end": 2.0}]
+
+Return ONLY a JSON array with the exact same structure.
 """,}
 
 
 def get_prompt(section_name: str) -> str:
     """
     Get a prompt by section name.
-    
+
     Args:
-        section_name: One of "Translate to Indonesian", "Fix Mismatched Caption/Topic", 
-                      or "Improve and Deduplicate Clips"
-    
+        section_name: One of:
+            - "Generate Single Clip Metadata"
+            - "Translate to Indonesian"
+            - "Fix Mismatched Caption/Topic"
+            - "Improve and Deduplicate Clips"
+            - "Translate Subtitle Phrases"
+            - "Fix and Translate Subtitle Phrases"
+
     Returns:
         The prompt text, or empty string if not found
     """
-    return PROMPTS.get(section_name, "")
+    prompt = PROMPTS.get(section_name, "")
+    if not prompt:
+        from ..utils import log
+        log("WARN", f"Prompt '{section_name}' not found. Available: {list(PROMPTS.keys())}")
+    return prompt

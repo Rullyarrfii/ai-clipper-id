@@ -25,6 +25,34 @@ def _escape_ass_path(path: str) -> str:
     return escaped
 
 
+def _compute_orientation_target(
+    src_w: int,
+    src_h: int,
+    orientation: str,
+) -> tuple[int, int] | None:
+    """Compute target resolution based on orientation setting.
+
+    Args:
+        src_w: Source video width
+        src_h: Source video height
+        orientation: "vertical", "horizontal", "square", or "auto"
+
+    Returns:
+        Tuple of (target_width, target_height) or None if no conversion needed.
+    """
+    if orientation == "auto":
+        return None
+
+    if orientation == "vertical":
+        return (1080, 1920)
+    elif orientation == "horizontal":
+        return (1920, 1080)
+    elif orientation == "square":
+        return (1080, 1080)
+
+    return None
+
+
 def _get_video_info(video_path: str) -> dict[str, Any]:
     """Get video width, height, duration, fps, and audio presence via ffprobe."""
     try:

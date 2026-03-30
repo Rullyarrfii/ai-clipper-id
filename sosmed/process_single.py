@@ -35,21 +35,25 @@ def _build_full_video_clip(
     video: Path,
     video_duration: float,
     segments: list[dict],
+    title: str | None = None,
+    caption: str | None = None,
 ) -> dict:
     """Build a single clip that covers the entire video."""
     clip_start = 0.0
     if segments:
         clip_start = max(0.0, min(float(segments[0].get("start", 0.0)), video_duration))
 
-    title = re.sub(r"[_-]+", " ", video.stem).strip() or video.stem
+    default_title = re.sub(r"[_-]+", " ", video.stem).strip() or video.stem
+    final_title = title if title else default_title
+    final_caption = caption if caption else default_title
 
     return {
         "rank": 1,
         "start": clip_start,
         "end": video_duration,
-        "title": title,
-        "topic": title,
-        "caption": title,
+        "title": final_title,
+        "topic": final_title,
+        "caption": final_caption,
         "reason": "Single-video mode returns the full source video.",
         "hook": "",
         "score_hook": 0,
@@ -90,6 +94,8 @@ def process_single_video(
     llm_model: str | None = None,
     subtitles: bool = True,
     subtitle_position: str = "lower",
+    title: str | None = None,
+    caption: str | None = None,
 ) -> dict:
     """
     Process a single video and extract the best clip.
@@ -159,7 +165,7 @@ def process_single_video(
     if not video_dur or video_dur <= 0:
         video_dur = float(segments[-1]["end"])
 
-    clips = [_build_full_video_clip(video, video_dur, segments)]
+    clips = [_build_full_video_clip(video, video_dur, segments, title=title, caption=caption)]
     log("INFO", "Single-video mode skips LLM chunking and uses the entire video as one clip")
     log("INFO", "Generating title, topic, caption, reason, and hook from transcript...")
     clips[0] = generate_single_clip_metadata(
@@ -318,6 +324,10 @@ def main() -> None:
     ap.add_argument("--subtitle-position", default="lower",
                     choices=["center", "upper", "lower"],
                     help="Subtitle position (default: lower)")
+    ap.add_argument("--title", default=None,
+                    help="Manually set the title (overrides auto-generated title)")
+    ap.add_argument("--caption", default=None,
+                    help="Manually set the caption (overrides auto-generated caption)")
 
     args = ap.parse_args()
     lang = None if args.lang.lower() == "none" else args.lang
@@ -341,6 +351,8 @@ def main() -> None:
         llm_model=args.llm_model,
         subtitles=args.subtitles,
         subtitle_position=args.subtitle_position,
+        title=args.title,
+        caption=args.caption,
     )
 
 

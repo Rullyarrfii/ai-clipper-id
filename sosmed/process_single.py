@@ -61,12 +61,12 @@ def _build_full_video_clip(
         "caption": final_caption,
         "reason": "Single-video mode returns the full source video.",
         "hook": "",
-        "score_hook": 0,
-        "score_insight_density": 0,
-        "score_retention": 0,
-        "score_emotional_payoff": 0,
-        "score_clarity": 0,
-        "clip_score": 0,
+        "score_hook": 100,
+        "score_insight_density": 100,
+        "score_retention": 100,
+        "score_emotional_payoff": 100,
+        "score_clarity": 100,
+        "clip_score": 100,
     }
 
 

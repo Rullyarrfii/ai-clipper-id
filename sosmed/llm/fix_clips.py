@@ -16,7 +16,10 @@ def generate_single_clip_metadata(
     llm_model: str | None = None,
     api_key: str | None = None,
 ) -> dict[str, Any]:
-    """Generate title/topic/caption/reason/hook for a full-video clip from transcript."""
+    """Generate title/topic/caption/reason/hook for a full-video clip from transcript.
+
+    Preserves user-provided title and caption if they are already set.
+    """
     transcript = _build_transcript_for_metadata(segments)
     if not transcript:
         raise RuntimeError("Cannot generate single clip metadata without transcript text")
@@ -35,7 +38,18 @@ def generate_single_clip_metadata(
 
     generated = result[0]
     updated = clip.copy()
+
+    # Preserve user-provided title and caption, otherwise use LLM-generated
+    user_title = str(clip.get("title", "") or "").strip()
+    user_caption = str(clip.get("caption", "") or "").strip()
+
     for field in ["title", "topic", "caption", "reason", "hook"]:
+        # Skip if user already provided this field
+        if field == "title" and user_title:
+            continue
+        if field == "caption" and user_caption:
+            continue
+
         value = str(generated.get(field, "") or "").strip()
         if not value:
             raise RuntimeError(f"Single clip metadata missing required field: {field}")

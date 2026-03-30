@@ -103,6 +103,7 @@ def generate_ass_subtitles(
     normal_color: str | None = None,
     position: str = "lower",
     max_words_per_group: int = 4,
+    subtitle_margin_pct: float | None = None,
 ) -> str:
     """Generate ASS subtitles with word-by-word yellow highlight.
 
@@ -111,9 +112,13 @@ def generate_ass_subtitles(
     - **Word-by-word highlight**: each word turns yellow when spoken,
       NOT karaoke sweep — discrete per-word color change
     - **Slightly smaller** font (2.8% vs 3.5%) for cleaner look
-    - **Lower position** (40% from bottom) to avoid face occlusion
+    - **Lower position** (25% from bottom by default) to avoid face occlusion
     - **Modern font**: Montserrat (falls back to Arial if unavailable)
     - **No temporal overlap** between subtitle groups
+
+    Args:
+        subtitle_margin_pct: Override margin percentage from bottom (for "lower" position).
+                            Defaults to 25% if not specified.
     """
 
     hi_color = highlight_color or COLOR_HIGHLIGHT
@@ -125,8 +130,9 @@ def generate_ass_subtitles(
     shadow_depth = max(1, outline_w // 2)
 
     # ── Alignment & margins ──────────────────────────────────────────────
+    default_lower_margin = subtitle_margin_pct if subtitle_margin_pct is not None else 25.0
     margin_pct = {
-        "lower":  40.0,  # 40% from bottom — slightly more down
+        "lower":  default_lower_margin,  # Adjustable, default 25% from bottom
         "center": 0.0,
         "upper":  5.0,
     }
@@ -264,8 +270,8 @@ def generate_title_overlay(
     else:
         font_size = int(play_res_y * 0.08)
 
-    outline_w = max(2, int(font_size * 0.06))
-    shadow_d = max(1, outline_w // 2)
+    outline_w = max(4, int(font_size * 0.15))  # Thicker outline for rounded effect
+    shadow_d = max(3, int(font_size * 0.12))   # Larger shadow for soft rounded corners
 
     # Colors
     c_text = _rgb_to_ass(255, 255, 255)

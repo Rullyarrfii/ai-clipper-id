@@ -16,6 +16,7 @@ from .prefilter import prefilter_segments
 from .llm import generate_single_clip_metadata, translate_subtitle_words
 from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
+from .config import get_defaults
 from .utils import (
     log, BOLD, RESET, CYAN, GREEN,
     strip_internal_fields, get_internal_fields, get_clips_cache_dir
@@ -94,6 +95,7 @@ def process_single_video(
     llm_model: str | None = None,
     subtitles: bool = True,
     subtitle_position: str = "lower",
+    subtitle_margin_pct: float | None = None,
     title: str | None = None,
     caption: str | None = None,
 ) -> dict:
@@ -229,6 +231,7 @@ def process_single_video(
             output_dir=output_path,
             subtitles=True,
             subtitle_position=subtitle_position,
+            subtitle_margin_pct=subtitle_margin_pct,
         )
     else:
         outputs = raw_outputs
@@ -279,14 +282,16 @@ def process_single_video(
 
 def main() -> None:
     """CLI entry point for process_single.py"""
+    defaults = get_defaults()
+
     ap = argparse.ArgumentParser(
         description="Process a single video and extract the best clip with overlay subtitles.",
     )
     ap.add_argument("video", help="Path to input video")
-    ap.add_argument("--model", default="turbo",
+    ap.add_argument("--model", default=defaults.get("whisper_model", "turbo"),
                     choices=["tiny", "base", "small", "medium",
                              "large-v2", "large-v3", "distil-large-v3", "turbo"],
-                    help="Whisper model size (default: turbo)")
+                    help="Whisper model size (default: from config or turbo)")
     ap.add_argument("--lang", default="id",
                     help="Language code — 'id' Indonesian, 'en' English, "
                          "or None for auto-detect (default: id)")
@@ -319,11 +324,15 @@ def main() -> None:
     ap.add_argument("--llm-model", default=None,
                     help="Override LLM model name for OpenRouter")
     ap.add_argument("--subtitles", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="TikTok-style word-by-word subtitles (default: on)")
-    ap.add_argument("--subtitle-position", default="lower",
+                    default=defaults.get("subtitles_enabled", True),
+                    help="TikTok-style word-by-word subtitles (default: from config or on)")
+    ap.add_argument("--subtitle-position",
+                    default=defaults.get("subtitle_position", "lower"),
                     choices=["center", "upper", "lower"],
-                    help="Subtitle position (default: lower)")
+                    help="Subtitle position (default: from config or lower)")
+    ap.add_argument("--subtitle-margin", type=float,
+                    default=defaults.get("subtitle_margin_pct"),
+                    help="Subtitle margin from bottom for 'lower' position in %% (default: from config or 25)")
     ap.add_argument("--title", default=None,
                     help="Manually set the title (overrides auto-generated title)")
     ap.add_argument("--caption", default=None,
@@ -351,6 +360,7 @@ def main() -> None:
         llm_model=args.llm_model,
         subtitles=args.subtitles,
         subtitle_position=args.subtitle_position,
+        subtitle_margin_pct=args.subtitle_margin,
         title=args.title,
         caption=args.caption,
     )

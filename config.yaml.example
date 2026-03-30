@@ -98,6 +98,7 @@ defaults:
   # Subtitles
   subtitles_enabled: true
   subtitle_position: lower  # Options: center, upper, lower
+  subtitle_margin_pct: 25.0  # Margin from bottom for "lower" position (in %). Use 0.0 for center, 5.0 for upper.
 
   # Person detection & crop
   crop_enabled: false

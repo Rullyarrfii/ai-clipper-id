@@ -123,6 +123,7 @@ def _postprocess_one(
     *,
     subtitles: bool = True,
     subtitle_position: str = "lower",
+    subtitle_margin_pct: float | None = None,
     orientation: str = "auto",
     enable_crop: bool = False,
     crop_target: str = "vertical",
@@ -244,6 +245,7 @@ def _postprocess_one(
                 play_res_x=out_w,
                 play_res_y=out_h,
                 position=subtitle_position,
+                subtitle_margin_pct=subtitle_margin_pct,
             )
             tmp = tempfile.NamedTemporaryFile(
                 suffix=".ass", prefix="sosmed_sub_",
@@ -437,6 +439,7 @@ def postprocess_clips(
     max_workers: int = 2,
     subtitles: bool = True,
     subtitle_position: str = "lower",
+    subtitle_margin_pct: float | None = None,
     orientation: str = "auto",
     enable_crop: bool = False,
     crop_target: str = "vertical",
@@ -455,6 +458,7 @@ def postprocess_clips(
         output_dir: Output directory
         subtitles: Enable subtitle overlay
         subtitle_position: "lower", "center", or "upper"
+        subtitle_margin_pct: Margin percentage for subtitle position (e.g. 25 for "lower" position)
         enable_crop: Enable person-detection crop
         crop_target: "vertical", "horizontal", or "square"
         enable_music: Enable background music
@@ -507,6 +511,7 @@ def postprocess_clips(
                 raw_path, clip, segments, output_dir,
                 subtitles=subtitles,
                 subtitle_position=subtitle_position,
+                subtitle_margin_pct=subtitle_margin_pct,
                 enable_crop=enable_crop,
                 crop_target=crop_target,
                 enable_music=enable_music,

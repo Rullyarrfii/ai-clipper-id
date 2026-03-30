@@ -3,10 +3,10 @@ Instagram CTA — fades to black and shows a follow prompt at the end of clips.
 
 Appends a professional 3-second CTA screen with:
   • Fade-from-video transition to black
-  • Instagram accent bar
+  • Instagram camera icon (light-blue geometric)
   • Account name (large, white)
-  • Username (pink, with @)
-  • "Follow" button (white pill, black text)
+  • Username (light blue, with @)
+  • "Follow" button (light-blue fill, dark text)
   • Click sound when the button appears
 """
 
@@ -77,101 +77,105 @@ def append_instagram_cta(
     # Clamp fade so it never exceeds 40 % of the clip
     fade_duration = min(fade_duration, main_dur * 0.4)
 
-    # ── Layout (percentage-based so it works for any resolution) ─────────────
-    margin_h = int(w * 0.10)   # 10 % left/right margin — comfortable breathing room
+    # ── Accent colour ─────────────────────────────────────────────────────────
+    ACCENT = "0x29B6F6"   # light blue
 
-    # Font sizes
-    label_fs = max(26, int(h * 0.022))   # "Follow on Instagram"
-    name_fs  = max(58, int(h * 0.070))   # account name  (big & clear)
-    user_fs  = max(40, int(h * 0.042))   # @username     (medium)
-    btn_fs   = max(32, int(h * 0.034))   # "Follow" inside button
+    # ── Font sizes ────────────────────────────────────────────────────────────
+    name_fs = max(58, int(h * 0.068))   # account name  (big & clear)
+    user_fs = max(38, int(h * 0.040))   # @username     (medium)
+    btn_fs  = max(30, int(h * 0.032))   # "Follow" inside button
 
-    # Vertical positions — block centered ~32 %–65 % of frame height
-    accent_y = int(h * 0.320)
-    accent_h = max(5, int(h * 0.006))    # slightly thicker accent bar
-    label_y  = int(h * 0.355)
-    name_y   = int(h * 0.400)
-    user_y   = int(h * 0.505)
+    # ── Instagram camera icon ─────────────────────────────────────────────────
+    icon_size = max(90, int(h * 0.057))   # outer square side
+    icon_cx   = w // 2
+    icon_top  = int(h * 0.290)
+    icon_x    = icon_cx - icon_size // 2
+    icon_bw   = max(5, int(icon_size * 0.075))   # border thickness
 
-    btn_h        = max(64, int(h * 0.072))
-    btn_w        = max(220, int(w * 0.420))   # 42 % width — compact, button-like
-    btn_x        = (w - btn_w) // 2
-    btn_y        = int(h * 0.580)
-    btn_ty       = btn_y + (btn_h - btn_fs) // 2   # vertically centre "Follow" text
-    btn_border   = max(3, int(h * 0.003))           # pink border thickness
+    lens_size = int(icon_size * 0.50)             # inner lens square
+    lens_x    = icon_cx - lens_size // 2
+    lens_y    = icon_top + (icon_size - lens_size) // 2
+    lens_bw   = max(4, int(icon_size * 0.055))
 
-    # ── Animation timing (t = seconds into CTA segment, i.e. starts at 0) ────
-    t_accent = 0.10
-    t_label  = (0.15, 0.55)
-    t_name   = (0.30, 0.70)
-    t_user   = (0.50, 0.90)
-    t_btn    = 1.10    # button pop-in + click sound
+    dot_size  = max(7, int(icon_size * 0.10))     # viewfinder dot (top-right)
+    dot_x     = icon_x + icon_size - dot_size - int(icon_size * 0.16)
+    dot_y     = icon_top + int(icon_size * 0.12)
+
+    # ── Vertical positions ────────────────────────────────────────────────────
+    name_y = int(h * 0.420)
+    user_y = int(h * 0.510)
+
+    btn_h  = max(60, int(h * 0.068))
+    btn_w  = max(200, int(w * 0.400))
+    btn_x  = (w - btn_w) // 2
+    btn_y  = int(h * 0.578)
+    btn_ty = btn_y + (btn_h - btn_fs) // 2
+
+    # ── Animation timing (t = seconds into CTA segment) ──────────────────────
+    t_icon = 0.10
+    t_name = (0.25, 0.60)
+    t_user = (0.42, 0.75)
+    t_btn  = 1.00    # button pop-in + click sound
 
     name_esc = _esc(name)
     user_esc = _esc(username)
 
     # ── CTA visual filter chain (all applied to the lavfi black background) ──
     filters: list[str] = [
-        # Instagram accent bar (pink horizontal rule above text)
-        (f"drawbox=x={margin_h}:y={accent_y}"
-         f":w={w - 2 * margin_h}:h={accent_h}"
-         f":color=0xE1306C:t=fill"
-         f":enable='gte(t,{t_accent:.3f})'"),
+        # ── Instagram logo: camera icon (geometric flat design) ───────────────
 
-        # "Follow on Instagram" label
-        (f"drawtext=font=Montserrat:fontsize={label_fs}"
-         f":text='Follow on Instagram'"
-         f":x=(w-tw)/2:y={label_y}"
-         f":fontcolor=0xCCCCCC"
-         f":bordercolor=0x000000:borderw=1"
-         f":alpha='{_fade(*t_label)}'"),
+        # Camera body — outer square border
+        (f"drawbox=x={icon_x}:y={icon_top}"
+         f":w={icon_size}:h={icon_size}"
+         f":color={ACCENT}:t={icon_bw}"
+         f":enable='gte(t,{t_icon:.3f})'"),
 
-        # Account name — drop shadow
+        # Camera lens — inner square border (centred inside body)
+        (f"drawbox=x={lens_x}:y={lens_y}"
+         f":w={lens_size}:h={lens_size}"
+         f":color={ACCENT}:t={lens_bw}"
+         f":enable='gte(t,{t_icon:.3f})'"),
+
+        # Viewfinder dot — small filled square (top-right of body)
+        (f"drawbox=x={dot_x}:y={dot_y}"
+         f":w={dot_size}:h={dot_size}"
+         f":color={ACCENT}:t=fill"
+         f":enable='gte(t,{t_icon:.3f})'"),
+
+        # ── Account name ──────────────────────────────────────────────────────
+
+        # Drop shadow
         (f"drawtext=font=Montserrat:fontsize={name_fs}"
          f":text='{name_esc}'"
-         f":x=(w-tw)/2+4:y={name_y + 4}"
-         f":fontcolor=0x000000@0.70"
+         f":x=(w-tw)/2+3:y={name_y + 3}"
+         f":fontcolor=0x000000@0.60"
          f":alpha='{_fade(*t_name)}'"),
 
-        # Account name — main text (large, white, bold look via border)
+        # Main text (white)
         (f"drawtext=font=Montserrat:fontsize={name_fs}"
          f":text='{name_esc}'"
          f":x=(w-tw)/2:y={name_y}"
          f":fontcolor=white"
-         f":bordercolor=0x111111:borderw=4"
+         f":bordercolor=0x111111:borderw=3"
          f":alpha='{_fade(*t_name)}'"),
 
-        # Username — drop shadow
-        (f"drawtext=font=Montserrat:fontsize={user_fs}"
-         f":text='{user_esc}'"
-         f":x=(w-tw)/2+2:y={user_y + 2}"
-         f":fontcolor=0x000000@0.65"
-         f":alpha='{_fade(*t_user)}'"),
-
-        # Username — main text (Instagram pink)
+        # ── @username (light blue) ────────────────────────────────────────────
         (f"drawtext=font=Montserrat:fontsize={user_fs}"
          f":text='{user_esc}'"
          f":x=(w-tw)/2:y={user_y}"
-         f":fontcolor=0xF06292"
+         f":fontcolor={ACCENT}"
          f":bordercolor=0x111111:borderw=2"
          f":alpha='{_fade(*t_user)}'"),
 
-        # Follow button — pink border (drawn first, slightly larger)
-        (f"drawbox=x={btn_x - btn_border}:y={btn_y - btn_border}"
-         f":w={btn_w + 2 * btn_border}:h={btn_h + 2 * btn_border}"
-         f":color=0xE1306C:t=fill"
-         f":enable='gte(t,{t_btn:.3f})'"),
-
-        # Follow button — white fill (over the border)
+        # ── Follow button (light-blue fill, dark text) ────────────────────────
         (f"drawbox=x={btn_x}:y={btn_y}:w={btn_w}:h={btn_h}"
-         f":color=white:t=fill"
+         f":color={ACCENT}:t=fill"
          f":enable='gte(t,{t_btn:.3f})'"),
 
-        # Follow button — "Follow" label (black text on white)
         (f"drawtext=font=Montserrat:fontsize={btn_fs}"
          f":text='Follow'"
          f":x=(w-tw)/2:y={btn_ty}"
-         f":fontcolor=black"
+         f":fontcolor=0x0D1B2A"
          f":enable='gte(t,{t_btn:.3f})'"),
     ]
 
@@ -216,9 +220,14 @@ def append_instagram_cta(
     # Apply CTA visuals to the black background
     fc.append(f"[1:v]{cta_chain}[cta_v]")
 
+    # Normalise the main clip's timebase to match the lavfi source before xfade.
+    # libx264 uses 1/15360 while lavfi uses 1/fps; mismatched timebases cause
+    # "do not match" errors in xfade.
+    fc.append(f"[0:v]fps={fps:.4f}[v0norm]")
+
     # xfade: clip fades into CTA black screen
     fc.append(
-        f"[0:v][cta_v]xfade=transition=fade"
+        f"[v0norm][cta_v]xfade=transition=fade"
         f":duration={fade_duration:.4f}"
         f":offset={xfade_offset:.4f}[vout]"
     )

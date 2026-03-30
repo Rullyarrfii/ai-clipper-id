@@ -167,22 +167,38 @@ def _postprocess_one(
 
     # ── 0. Determine output resolution (orientation conversion) ──────────
     orient_target = _compute_orientation_target(src_w, src_h, orientation)
+    orient_scale_filter: str | None = None
     if orient_target:
         out_w, out_h = orient_target
         log("DEBUG", f"Clip #{clip.get('rank')}: {src_w}x{src_h} → {out_w}x{out_h} ({orientation})")
+        # Only add scale when the source dimensions don't already match the target
+        if (src_w, src_h) != (out_w, out_h):
+            # Scale to fill (crop-to-fill, no black bars): scale up so the
+            # shorter dimension meets the target, then center-crop the overflow.
+            orient_scale_filter = (
+                f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                f"crop={out_w}:{out_h}"
+            )
 
     # ── 0b. Person detection + crop ───────────────────────────────────────────
+    # Run person-detection crop when explicitly requested (enable_crop) OR when
+    # orientation conversion requires a reframe (e.g. landscape → portrait).
     crop_filter = None
-    if enable_crop:
+    _orient_name_map = {(1080, 1920): "vertical", (1920, 1080): "horizontal", (1080, 1080): "square"}
+    _effective_crop_target = crop_target if enable_crop else (
+        _orient_name_map.get((out_w, out_h)) if orient_scale_filter else None
+    )
+
+    if _effective_crop_target:
         from .person_detection import (
             detect_persons_in_clip, compute_crop_region,
             build_crop_filter, needs_crop,
         )
         aspect_map = {"vertical": 9 / 16, "horizontal": 16 / 9, "square": 1.0}
-        target_aspect = aspect_map.get(crop_target, 9 / 16)
+        target_aspect = aspect_map.get(_effective_crop_target, 9 / 16)
 
-        if needs_crop(src_w, src_h, crop_target):
-            log("DEBUG", f"Clip #{clip.get('rank')}: detecting persons for {crop_target} crop...")
+        if needs_crop(src_w, src_h, _effective_crop_target):
+            log("DEBUG", f"Clip #{clip.get('rank')}: detecting persons for {_effective_crop_target} crop...")
             detections = detect_persons_in_clip(raw_clip_path, sample_interval=1.0)
 
             if detections:
@@ -192,9 +208,9 @@ def _postprocess_one(
                 )
                 if region:
                     # Determine target resolution
-                    if crop_target == "vertical":
+                    if _effective_crop_target == "vertical":
                         target_w, target_h = 1080, 1920
-                    elif crop_target == "horizontal":
+                    elif _effective_crop_target == "horizontal":
                         target_w, target_h = 1920, 1080
                     else:
                         target_w, target_h = 1080, 1080
@@ -205,7 +221,7 @@ def _postprocess_one(
             else:
                 log("DEBUG", f"Clip #{clip.get('rank')}: no persons detected, using center crop")
                 # Fallback: center crop without person detection
-                if crop_target == "vertical" and src_w > src_h:
+                if _effective_crop_target == "vertical" and src_w > src_h:
                     crop_w = int(src_h * target_aspect)
                     crop_w = crop_w - (crop_w % 2)
                     crop_x = (src_w - crop_w) // 2
@@ -303,9 +319,12 @@ def _postprocess_one(
     if silence_filter_v:
         vfilters_chain.append(silence_filter_v)
 
-    # Crop filter
+    # Crop filter (includes its own scale to target resolution)
     if crop_filter:
         vfilters_chain.append(crop_filter)
+    elif orient_scale_filter:
+        # Orientation conversion without person-crop
+        vfilters_chain.append(orient_scale_filter)
 
     # Subtitle filters
     if ass_path:

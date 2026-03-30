@@ -18,9 +18,10 @@ from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
 from .utils import (
     log, BOLD, RESET, CYAN, GREEN, YELLOW,
-    MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries,
+    MAX_CLIPS_HARD_LIMIT,
     save_clips_to_disk, load_clips_with_internal_fields
 )
+from .smart_clip_boundaries import smart_adjust_clip_boundaries
 from .config import get_defaults, load_config, get_cta_settings
 
 
@@ -34,11 +35,11 @@ def _get_transcript_cache_path(video_path: str) -> Path:
 
 
 def _make_clip_filename(clip: dict) -> str:
-    """Generate clip filename matching the postprocess naming convention."""
+    """Generate clip filename for raw extracted clips (before postprocessing)."""
     rank = clip.get("rank", 0)
     safe = re.sub(r"[^\w\s-]", "", clip.get("title", f"clip_{rank}"))
     safe = re.sub(r"\s+", "_", safe)[:50]
-    return f"rank{rank:02d}_{safe}_final.mp4"
+    return f"rank{rank:02d}_{safe}.mp4"
 
 
 def _ensure_filenames(clips_list: list[dict]) -> bool:
@@ -117,6 +118,23 @@ def _prepare_subtitles(clips, segments, args, detected_language):
         except Exception as e:
             log("WARN", f"Could not translate subtitles for clip #{clip['rank']}: {e}")
             clip["_subtitle_words"] = []
+
+
+def _get_crop_target_from_orientation(orientation: str) -> str:
+    """Map output orientation to crop target for person detection.
+    
+    Args:
+        orientation: "auto", "portrait", or "landscape"
+    
+    Returns:
+        crop_target: "vertical", "horizontal", or "square"
+    """
+    if orientation in ("portrait", "vertical"):
+        return "vertical"
+    elif orientation in ("landscape", "horizontal"):
+        return "horizontal"
+    else:  # "auto" or "square"
+        return "vertical"  # Default to vertical for social media
 
 
 def main() -> None:
@@ -204,12 +222,11 @@ def main() -> None:
 
     # ── Person detection & crop ──────────────────────────────────────────
     ap.add_argument("--crop", action=argparse.BooleanOptionalAction,
-                    default=defaults["crop_enabled"],
-                    help=f"Enable YOLO person detection + close-up crop "
-                         f"(default: {'on' if defaults['crop_enabled'] else 'off'})")
-    ap.add_argument("--crop-target", default=defaults["crop_target"],
+                    default=False,
+                    help="Enable YOLO person detection + close-up crop (default: off, uses simple center crop for orientation)")
+    ap.add_argument("--crop-target", default="vertical",
                     choices=["vertical", "horizontal", "square"],
-                    help=f"Target aspect ratio for crop (default: {defaults['crop_target']})")
+                    help=f"Target aspect ratio for crop (default: vertical)")
 
     # ── Background music ─────────────────────────────────────────────────
     ap.add_argument("--music", action=argparse.BooleanOptionalAction,
@@ -338,6 +355,7 @@ def main() -> None:
 
         # Post-process
         _cta_cfg = {**_cta_defaults, "enabled": args.cta}
+        log("DEBUG", f"Example mode postprocess: orientation={args.orientation}, crop={args.crop}")
         any_postprocess = args.subtitles or args.orientation != "auto" or args.crop or args.music or args.remove_silence or args.cta
         if any_postprocess and raw_outputs:
             outputs = postprocess_clips(
@@ -484,20 +502,21 @@ def main() -> None:
         sys.exit(0)
 
     if not clips_from_cache:
-        # Tighten clip boundaries
+        # Smart-adjust clip boundaries for viral-worthy hooks and natural endings
         original_durations = [c["end"] - c["start"] for c in clips]
-        clips = tighten_clip_boundaries(
+        clips = smart_adjust_clip_boundaries(
             clips, segments,
-            padding=0.15,
-            max_gap=2.0,
-            min_speech_density=0.5,
+            min_duration=5.0,
+            max_duration=float(args.max),
+            validate_hook_closing=True,
+            aggressive_optimization=True,  # Actively find power words and best endings
         )
         new_durations = [c["end"] - c["start"] for c in clips]
         time_saved = sum(original_durations) - sum(new_durations)
         if time_saved > 1:
             log("OK", f"Removed {time_saved:.1f}s of gaps/filler (avg {time_saved/len(clips):.1f}s per clip)")
         else:
-            log("OK", "Clip boundaries optimized")
+            log("OK", "Clip boundaries optimized for viral hooks and natural endings")
 
         # ── 3b. Improve and fix clips ──────────────────────────────────────
         log("INFO", "Improving clips: translate to Indonesian, fix captions, deduplicate topics...")
@@ -558,6 +577,7 @@ def main() -> None:
     _cta_cfg = {**_cta_defaults, "enabled": args.cta}
     any_postprocess = args.subtitles or args.orientation != "auto" or args.crop or args.music or args.remove_silence or args.cta
     if any_postprocess and raw_outputs:
+        crop_target = _get_crop_target_from_orientation(args.orientation)
         outputs = postprocess_clips(
             raw_outputs,
             clips,
@@ -567,7 +587,7 @@ def main() -> None:
             subtitle_position=args.subtitle_position,
             orientation=args.orientation,
             enable_crop=args.crop,
-            crop_target=args.crop_target,
+            crop_target=crop_target,
             enable_music=args.music,
             music_entries=music_entries,
             music_volume=args.music_volume,

@@ -13,13 +13,29 @@ from .backends import call_llm
 
 
 def _build_transcript_text(segments: list[dict[str, Any]]) -> str:
-    """Ultra-compact transcript: [start-end] text — saves tokens for long videos."""
+    """
+    Build transcript with sentence structure hints for better clip selection.
+    
+    Format: [start-end] text | gap_to_next
+    - Shows gap (in seconds) to next segment to help LLM identify natural pauses
+    - Gaps >1.0s marked with [PAUSE] to indicate sentence boundaries
+    """
     lines: list[str] = []
-    for s in segments:
+    for i, s in enumerate(segments):
         # Use integer seconds when possible to save chars
         st = f"{s['start']:.0f}" if s['start'] == int(s['start']) else f"{s['start']:.1f}"
         en = f"{s['end']:.0f}" if s['end'] == int(s['end']) else f"{s['end']:.1f}"
-        lines.append(f"[{st}-{en}]{s['text']}")
+        
+        # Calculate gap to next segment (for sentence boundary detection)
+        gap_marker = ""
+        if i < len(segments) - 1:
+            gap = segments[i + 1]["start"] - s["end"]
+            if gap >= 1.0:
+                gap_marker = f" [PAUSE {gap:.1f}s]"
+            elif gap >= 0.5:
+                gap_marker = f" [gap {gap:.2f}s]"
+        
+        lines.append(f"[{st}-{en}]{s['text']}{gap_marker}")
     return "\n".join(lines)
 
 
@@ -214,19 +230,55 @@ def _validate_clips(
         s, e = float(c["start"]), float(c["end"])
         dur = e - s
         title = c.get("title", "?")
+        
+        # Duration check
         if dur < min_dur or dur > max_dur:
             log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: duration {dur:.0f}s outside {min_dur}-{max_dur}s")
             continue
+        
+        # Video duration check
         if video_duration and e > video_duration + 2:
             log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: end exceeds video duration {video_duration:.0f}s")
             continue
+        
         score = c["_score"]
+        
+        # Minimum score check
         if score < min_score:
             log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: score {score:.1f} < {min_score}")
             continue
-        # Normalize score fields for output (no hard hook floor — clip_score weighting handles quality).
+        
+        # VIRAL REQUIREMENTS: Enforce strict score floors
+        hook_score = int(c.get("score_hook", 0) or 0)
+        retention_score = int(c.get("score_retention", 0) or 0)
+        
+        # No weak hooks allowed (must be ≥60)
+        if hook_score < 60:
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: hook score {hook_score} < 60 (weak hook)")
+            continue
+        
+        # Must have strong ending (retention ≥50)
+        if retention_score < 50:
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: retention score {retention_score} < 50 (weak ending)")
+            continue
+        
+        # At least two scores must be ≥70 (viral-tier quality)
+        all_scores = [
+            hook_score,
+            int(c.get("score_insight_density", 0) or 0),
+            retention_score,
+            int(c.get("score_emotional_payoff", 0) or 0),
+            int(c.get("score_clarity", 0) or 0),
+        ]
+        high_scores = sum(1 for score in all_scores if score >= 70)
+        if high_scores < 2:
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: only {high_scores} scores ≥70 (need 2+)")
+            continue
+        
+        # Normalize score fields for output
         normalized = _normalize_score_fields(c)
-        # Lenient overlap check
+        
+        # Overlap check — no near-duplicates
         def _overlap_ratio(s1: float, e1: float, s2: float, e2: float) -> float:
             overlap = max(0, min(e1, e2) - max(s1, s2))
             shorter = min(e1 - s1, e2 - s2)
@@ -234,8 +286,11 @@ def _validate_clips(
 
         overlaps = any(_overlap_ratio(s, e, rs, re) > 0.5 for rs, re in seen_ranges)
         if overlaps:
-            continue  # stricter overlap detection — no near-duplicates
+            log("DEBUG", f"Skip '{title}' [{s:.0f}-{e:.0f}]: overlaps with existing clip")
+            continue
+        
         seen_ranges.append((s, e))
+        
         # Ensure required fields
         c.setdefault("rank", len(valid) + 1)
         c.setdefault("title", f"Clip {c['rank']}")
@@ -248,6 +303,7 @@ def _validate_clips(
         c["clip_score"] = score
         c.pop("_score", None)
         c.pop("engagement_score", None)
+        
         # Remove score fields from older algorithms if present
         for legacy in (
             "score_shareability",
@@ -259,6 +315,7 @@ def _validate_clips(
             "score_newsworthy",
         ):
             c.pop(legacy, None)
+        
         valid.append(c)
         if len(valid) >= max_clips:
             break

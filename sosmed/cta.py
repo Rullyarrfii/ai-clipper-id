@@ -3,7 +3,7 @@ Instagram CTA — fades to black and shows a follow prompt at the end of clips.
 
 Appends a professional 3-second CTA screen with:
   • Fade-from-video transition to black
-  • Instagram camera icon (light-blue geometric)
+  • Instagram logo (assets/iglogo.png, scaled & faded in)
   • Account name (large, white)
   • Username (light blue, with @)
   • "Follow" button (light-blue fill, dark text)
@@ -85,30 +85,21 @@ def append_instagram_cta(
     user_fs = max(38, int(h * 0.040))   # @username     (medium)
     btn_fs  = max(30, int(h * 0.032))   # "Follow" inside button
 
-    # ── Instagram camera icon ─────────────────────────────────────────────────
-    icon_size = max(90, int(h * 0.057))   # outer square side
-    icon_cx   = w // 2
-    icon_top  = int(h * 0.290)
-    icon_x    = icon_cx - icon_size // 2
-    icon_bw   = max(5, int(icon_size * 0.075))   # border thickness
-
-    lens_size = int(icon_size * 0.50)             # inner lens square
-    lens_x    = icon_cx - lens_size // 2
-    lens_y    = icon_top + (icon_size - lens_size) // 2
-    lens_bw   = max(4, int(icon_size * 0.055))
-
-    dot_size  = max(7, int(icon_size * 0.10))     # viewfinder dot (top-right)
-    dot_x     = icon_x + icon_size - dot_size - int(icon_size * 0.16)
-    dot_y     = icon_top + int(icon_size * 0.12)
+    # ── Instagram logo (PNG overlay) ──────────────────────────────────────────
+    logo_path  = Path(__file__).parent.parent / "assets" / "iglogo.png"
+    logo_size  = max(120, int(w * 0.148))   # ~160 px on 1080 — clear but compact
+    icon_top   = int(h * 0.180)             # top edge of the logo (positioned lower for better balance)
 
     # ── Vertical positions ────────────────────────────────────────────────────
-    name_y = int(h * 0.420)
-    user_y = int(h * 0.510)
+    # drawtext y is the text BASELINE — cap-height sits ~75 % of font size ABOVE it,
+    # so name_y must be set well below the logo bottom to avoid overlap.
+    name_y = int(h * 0.420)   # baseline; visual top ≈ name_y - 0.75*name_fs
+    user_y = int(h * 0.500)
 
     btn_h  = max(60, int(h * 0.068))
     btn_w  = max(200, int(w * 0.400))
     btn_x  = (w - btn_w) // 2
-    btn_y  = int(h * 0.578)
+    btn_y  = int(h * 0.585)
     btn_ty = btn_y + (btn_h - btn_fs) // 2
 
     # ── Animation timing (t = seconds into CTA segment) ──────────────────────
@@ -120,28 +111,8 @@ def append_instagram_cta(
     name_esc = _esc(name)
     user_esc = _esc(username)
 
-    # ── CTA visual filter chain (all applied to the lavfi black background) ──
+    # ── CTA visual filter chain (drawtext/drawbox — no logo here) ───────────
     filters: list[str] = [
-        # ── Instagram logo: camera icon (geometric flat design) ───────────────
-
-        # Camera body — outer square border
-        (f"drawbox=x={icon_x}:y={icon_top}"
-         f":w={icon_size}:h={icon_size}"
-         f":color={ACCENT}:t={icon_bw}"
-         f":enable='gte(t,{t_icon:.3f})'"),
-
-        # Camera lens — inner square border (centred inside body)
-        (f"drawbox=x={lens_x}:y={lens_y}"
-         f":w={lens_size}:h={lens_size}"
-         f":color={ACCENT}:t={lens_bw}"
-         f":enable='gte(t,{t_icon:.3f})'"),
-
-        # Viewfinder dot — small filled square (top-right of body)
-        (f"drawbox=x={dot_x}:y={dot_y}"
-         f":w={dot_size}:h={dot_size}"
-         f":color={ACCENT}:t=fill"
-         f":enable='gte(t,{t_icon:.3f})'"),
-
         # ── Account name ──────────────────────────────────────────────────────
 
         # Drop shadow
@@ -214,11 +185,25 @@ def append_instagram_cta(
         "-i", f"aevalsrc={click_expr}:s=44100",
     ])
 
+    # [3] Instagram logo PNG (looped for the CTA duration)
+    cmd.extend(["-loop", "1", "-t", f"{duration:.4f}", "-i", str(logo_path)])
+
     # ── filter_complex ────────────────────────────────────────────────────────
     fc: list[str] = []
 
-    # Apply CTA visuals to the black background
-    fc.append(f"[1:v]{cta_chain}[cta_v]")
+    # Apply drawtext/drawbox to the black background
+    fc.append(f"[1:v]{cta_chain}[cta_text]")
+
+    # Scale logo to display size and fade it in, then overlay centred on CTA
+    fc.append(
+        f"[3:v]scale={logo_size}:{logo_size}"
+        f",fade=t=in:st={t_icon:.3f}:d=0.30:alpha=1"
+        f",format=rgba[logo_scaled]"
+    )
+    fc.append(
+        f"[cta_text][logo_scaled]overlay"
+        f"=x=(W-w)/2:y={icon_top}:format=auto[cta_v]"
+    )
 
     # Normalise the main clip's timebase to match the lavfi source before xfade.
     # libx264 uses 1/15360 while lavfi uses 1/fps; mismatched timebases cause

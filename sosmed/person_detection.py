@@ -43,6 +43,54 @@ def _get_video_dimensions(video_path: str) -> tuple[int, int, float]:
         return 0, 0, 30.0
 
 
+def _extract_frames_with_ffmpeg(
+    video_path: str,
+    sample_interval: float = 1.0,
+) -> list[tuple[float, bytes]]:
+    """Extract frames using FFmpeg and return as raw bytes for OpenCV.
+    
+    More robust for corrupted videos than cv2.VideoCapture.
+    
+    Returns list of (timestamp, frame_bytes) tuples.
+    """
+    try:
+        result = subprocess.run(
+            [
+                get_ffmpeg(), "-i", video_path,
+                "-vf", f"fps=1/{sample_interval}",
+                "-f", "rawvideo", "-pix_fmt", "bgr24",
+                "-"
+            ],
+            capture_output=True, timeout=300
+        )
+        if result.returncode != 0:
+            return []
+        
+        import cv2
+        import numpy as np
+        
+        w, h, _ = _get_video_dimensions(video_path)
+        if w == 0 or h == 0:
+            return []
+        
+        frame_bytes = result.stdout
+        frame_size = w * h * 3
+        
+        frames = []
+        timestamp = 0.0
+        for i in range(0, len(frame_bytes), frame_size):
+            if i + frame_size > len(frame_bytes):
+                break
+            frame_data = frame_bytes[i:i+frame_size]
+            frames.append((timestamp, frame_data, w, h))
+            timestamp += sample_interval
+        
+        return frames
+    except Exception as e:
+        log("DEBUG", f"FFmpeg frame extraction failed: {e}")
+        return []
+
+
 def detect_persons_in_clip(
     video_path: str,
     sample_interval: float = 1.0,
@@ -51,7 +99,8 @@ def detect_persons_in_clip(
     """Detect persons in video frames using YOLO.
 
     Samples frames at regular intervals and returns bounding boxes
-    for detected persons.
+    for detected persons. Tries cv2.VideoCapture first, falls back
+    to FFmpeg extraction for corrupted videos.
 
     Args:
         video_path: Path to the video clip.
@@ -77,46 +126,59 @@ def detect_persons_in_clip(
     # Load YOLO model (cached after first load)
     model = YOLO("yolov8n.pt")  # nano model — fast, good enough for person detection
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        log("WARN", f"Could not open video: {video_path}")
-        return []
-
-    frame_interval = int(fps * sample_interval)
     detections: list[dict[str, Any]] = []
-    frame_idx = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if frame_idx % frame_interval == 0:
-            time_sec = frame_idx / fps
-            # Run YOLO — class 0 = person
-            results = model(frame, verbose=False, classes=[0])
-
-            boxes = []
-            for result in results:
-                for box in result.boxes:
-                    conf = float(box.conf[0])
-                    if conf >= confidence_threshold:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        boxes.append({
-                            "x1": int(x1), "y1": int(y1),
-                            "x2": int(x2), "y2": int(y2),
-                            "conf": round(conf, 3),
-                            "area": int((x2 - x1) * (y2 - y1)),
-                        })
-
-            if boxes:
-                # Sort by area descending (largest person = likely speaker)
-                boxes.sort(key=lambda b: -b["area"])
-                detections.append({"time": round(time_sec, 2), "boxes": boxes})
-
-        frame_idx += 1
-
-    cap.release()
+    
+    # Try cv2.VideoCapture first (faster for normal videos)
+    frames_to_process = []
+    cap = cv2.VideoCapture(video_path)
+    if cap.isOpened():
+        log("DEBUG", f"Using cv2.VideoCapture for person detection")
+        frame_interval = int(fps * sample_interval) if fps > 0 else 1
+        frame_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_interval == 0:
+                time_sec = frame_idx / fps if fps > 0 else 0
+                frames_to_process.append((time_sec, frame))
+            frame_idx += 1
+        cap.release()
+    else:
+        # cv2.VideoCapture failed, try FFmpeg extraction
+        log("DEBUG", f"cv2.VideoCapture failed, trying FFmpeg frame extraction")
+        ffmpeg_frames = _extract_frames_with_ffmpeg(video_path, sample_interval)
+        if ffmpeg_frames:
+            for timestamp, frame_bytes, w_frame, h_frame in ffmpeg_frames:
+                frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((h_frame, w_frame, 3))
+                frames_to_process.append((timestamp, frame))
+    
+    if not frames_to_process:
+        log("WARN", f"Could not extract frames from video: {video_path}")
+        return []
+    
+    # Run YOLO on extracted frames
+    for time_sec, frame in frames_to_process:
+        results = model(frame, verbose=False, classes=[0])
+        
+        boxes = []
+        for result in results:
+            for box in result.boxes:
+                conf = float(box.conf[0])
+                if conf >= confidence_threshold:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    boxes.append({
+                        "x1": int(x1), "y1": int(y1),
+                        "x2": int(x2), "y2": int(y2),
+                        "conf": round(conf, 3),
+                        "area": int((x2 - x1) * (y2 - y1)),
+                    })
+        
+        if boxes:
+            # Sort by area descending (largest person = likely speaker)
+            boxes.sort(key=lambda b: -b["area"])
+            detections.append({"time": round(time_sec, 2), "boxes": boxes})
+    
     return detections
 
 
@@ -298,6 +360,156 @@ def build_crop_filter(
 
     x, y, w, h = crop_region["x"], crop_region["y"], crop_region["w"], crop_region["h"]
     return f"crop={w}:{h}:{x}:{y},scale={target_w}:{target_h}:flags=lanczos"
+
+
+def build_dynamic_crop_filter(
+    crop_regions: list[dict[str, Any]],
+    src_w: int,
+    src_h: int,
+    target_w: int,
+    target_h: int,
+) -> str:
+    """Build FFmpeg filter for dynamic crop with smooth pan/zoom transitions.
+
+    Uses FFmpeg's zoompan filter to create smooth camera movement that
+    follows the detected person across frames.
+
+    Args:
+        crop_regions: List of per-segment crop regions from compute_dynamic_crop_regions
+        src_w: Source video width
+        src_h: Source video height
+        target_w: Output width
+        target_h: Output height
+
+    Returns:
+        FFmpeg filter string with zoompan for smooth tracking
+    """
+    if not crop_regions:
+        # Fallback to center crop if no regions
+        return f"crop={target_w}:{target_h}:{(src_w - target_w) // 2}:{(src_h - target_h) // 2},scale={target_w}:{target_h}"
+
+    # Build keyframe expressions for zoompan filter
+    # zoompan syntax: zoompan=z=zoom:x=x_pos:y=y_pos:d=duration:primary=1:interp=linear
+
+    # Calculate zoom level (crop window relative to output size)
+    # For landscape→portrait: we crop a vertical slice from the landscape frame
+    src_aspect = src_w / src_h
+    target_aspect = target_w / target_h
+
+    if target_aspect < src_aspect:
+        # Source is wider than target → crop width
+        crop_h = src_h
+        crop_w = int(crop_h * target_aspect)
+    else:
+        # Source is taller than target → crop height
+        crop_w = src_w
+        crop_h = int(crop_w / target_aspect)
+
+    # Ensure even dimensions
+    crop_w = crop_w - (crop_w % 2)
+    crop_h = crop_h - (crop_h % 2)
+
+    # Zoom factor: how much we're zooming in
+    zoom_x = crop_w / src_w
+    zoom_y = crop_h / src_h
+    zoom = min(zoom_x, zoom_y)
+
+    # Build expressions for each keyframe
+    # Format: 'if(lte(X,{time}),{x_expr},{next_x_expr})'
+    expressions = []
+
+    for i, region in enumerate(crop_regions):
+        t = region["time"]
+        x = region["x"]
+        y = region["y"]
+
+        # Convert crop coordinates to zoompan coordinates
+        # zoompan x/y are the center point of the zoom window
+        cx = x + crop_w / 2
+        cy = y + crop_h / 2
+
+        expressions.append({
+            "time": t,
+            "cx": cx,
+            "cy": cy,
+            "zoom": zoom,
+        })
+
+    # Build nested if-else expression for smooth interpolation
+    # zoompan will interpolate between keyframes
+    if len(expressions) == 1:
+        # Single keyframe: constant position
+        expr = f"z={zoom:.4f}:x={expressions[0]['cx']}:y={expressions[0]['cy']}:d=1"
+    else:
+        # Multiple keyframes: build interpolation expression
+        # Use zoompan with linear interpolation between keyframes
+        # d=1 means each keyframe lasts 1 frame, zoompan interpolates
+        keyframes = []
+        for i, exp in enumerate(expressions):
+            dur = 1
+            if i < len(expressions) - 1:
+                # Duration until next keyframe (in frames, assuming 30fps)
+                next_t = expressions[i + 1]["time"]
+                dur = max(1, int((next_t - exp["time"]) * 30))
+            keyframes.append(f"if(between(n,{int(exp['time']*30)},{int(exp['time']*30)+dur}),{exp['cx']},{exp['cy']},{exp['zoom']})")
+
+        # Simpler approach: use zoompan with static zoom and interpolated x/y
+        # Build expression that selects the appropriate target position based on frame number
+        x_expr = _build_interpolation_expr([(e["time"], e["cx"]) for e in expressions], fps=30)
+        y_expr = _build_interpolation_expr([(e["time"], e["cy"]) for e in expressions], fps=30)
+        expr = f"z={zoom:.4f}:x={x_expr}:y={y_expr}:d=1:primary=1:interp=linear"
+
+    # zoompan filter: zooms and pans, then we scale to final output size
+    return f"zoompan={expr}:s={target_w}x{target_h}"
+
+
+def _build_interpolation_expr(
+    keyframes: list[tuple[float, float]],
+    fps: int = 30,
+) -> str:
+    """Build FFmpeg expression for linear interpolation between keyframes.
+
+    Args:
+        keyframes: List of (time_seconds, value) tuples
+        fps: Frames per second
+
+    Returns:
+        FFmpeg expression string using nested if-else for interpolation
+    """
+    if not keyframes:
+        return "0"
+    if len(keyframes) == 1:
+        return str(keyframes[0][1])
+
+    # Sort by time
+    keyframes = sorted(keyframes, key=lambda x: x[0])
+
+    # Build nested if expression
+    # Format: if(lte(n, {frame_n}), {value_or_interp}, {next_if})
+    exprs = []
+    for i in range(len(keyframes) - 1):
+        t1, v1 = keyframes[i]
+        t2, v2 = keyframes[i + 1]
+        n1 = int(t1 * fps)
+        n2 = int(t2 * fps)
+
+        if n2 == n1:
+            # Same frame, use v1
+            exprs.append(f"if(lte(n,{n1}),{v1:.1f},")
+        else:
+            # Linear interpolation: v1 + (v2-v1)*(n-n1)/(n2-n1)
+            slope = (v2 - v1) / (n2 - n1) if n2 != n1 else 0
+            interp = f"{v1:.1f}+{slope:.4f}*(n-{n1})"
+            exprs.append(f"if(lte(n,{n2}),{interp},")
+
+    # Last keyframe value
+    last_n = int(keyframes[-1][0] * fps)
+    last_v = keyframes[-1][1]
+    exprs.append(str(last_v))
+
+    # Close parentheses
+    expr = "".join(exprs) + ")" * (len(exprs) - 1)
+    return expr
 
 
 def needs_crop(src_w: int, src_h: int, target_aspect: str = "vertical") -> bool:

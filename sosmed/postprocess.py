@@ -35,7 +35,7 @@ def _compute_orientation_target(
     Args:
         src_w: Source video width
         src_h: Source video height
-        orientation: "vertical", "horizontal", "square", or "auto"
+        orientation: "vertical", "horizontal", "square", "portrait", "landscape", or "auto"
 
     Returns:
         Tuple of (target_width, target_height) or None if no conversion needed.
@@ -43,9 +43,9 @@ def _compute_orientation_target(
     if orientation == "auto":
         return None
 
-    if orientation == "vertical":
+    if orientation in ("vertical", "portrait"):
         return (1080, 1920)
-    elif orientation == "horizontal":
+    elif orientation in ("horizontal", "landscape"):
         return (1920, 1080)
     elif orientation == "square":
         return (1080, 1080)
@@ -179,15 +179,16 @@ def _postprocess_one(
                 f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
                 f"crop={out_w}:{out_h}"
             )
+        else:
+            log("DEBUG", f"Clip #{clip.get('rank')}: source already matches target, no scale needed")
+    else:
+        log("DEBUG", f"Clip #{clip.get('rank')}: orientation={orientation}, no conversion needed")
 
     # ── 0b. Person detection + crop ───────────────────────────────────────────
-    # Run person-detection crop when explicitly requested (enable_crop) OR when
-    # orientation conversion requires a reframe (e.g. landscape → portrait).
+    # Run person-detection crop ONLY when explicitly requested (enable_crop).
+    # Orientation conversion uses orient_scale_filter (simple center crop), not person detection.
     crop_filter = None
-    _orient_name_map = {(1080, 1920): "vertical", (1920, 1080): "horizontal", (1080, 1080): "square"}
-    _effective_crop_target = crop_target if enable_crop else (
-        _orient_name_map.get((out_w, out_h)) if orient_scale_filter else None
-    )
+    _effective_crop_target = crop_target if enable_crop else None
 
     if _effective_crop_target:
         from .person_detection import (
@@ -201,32 +202,44 @@ def _postprocess_one(
             log("DEBUG", f"Clip #{clip.get('rank')}: detecting persons for {_effective_crop_target} crop...")
             detections = detect_persons_in_clip(raw_clip_path, sample_interval=1.0)
 
-            if detections:
-                region = compute_crop_region(
-                    detections, src_w, src_h,
-                    target_aspect=target_aspect,
+            if not detections:
+                # Person detection required but failed - no fallback allowed
+                raise RuntimeError(
+                    f"Clip #{clip.get('rank')}: Person detection failed for {_effective_crop_target} crop. "
+                    f"Video may have codec issues or contain no detectable persons."
                 )
-                if region:
-                    # Determine target resolution
-                    if _effective_crop_target == "vertical":
-                        target_w, target_h = 1080, 1920
-                    elif _effective_crop_target == "horizontal":
-                        target_w, target_h = 1920, 1080
-                    else:
-                        target_w, target_h = 1080, 1080
 
-                    crop_filter = build_crop_filter(region, target_w, target_h)
-                    out_w, out_h = target_w, target_h
-                    log("DEBUG", f"Clip #{clip.get('rank')}: crop region {region}")
+            # Use dynamic crop regions with interpolation between detections
+            from .person_detection import compute_dynamic_crop_regions, build_dynamic_crop_filter
+            if _effective_crop_target == "vertical":
+                target_w, target_h = 1080, 1920
+            elif _effective_crop_target == "horizontal":
+                target_w, target_h = 1920, 1080
             else:
-                log("DEBUG", f"Clip #{clip.get('rank')}: no persons detected, using center crop")
-                # Fallback: center crop without person detection
-                if _effective_crop_target == "vertical" and src_w > src_h:
-                    crop_w = int(src_h * target_aspect)
-                    crop_w = crop_w - (crop_w % 2)
-                    crop_x = (src_w - crop_w) // 2
-                    crop_filter = f"crop={crop_w}:{src_h}:{crop_x}:0,scale=1080:1920:flags=lanczos"
-                    out_w, out_h = 1080, 1920
+                target_w, target_h = 1080, 1080
+
+            # Compute per-segment crop regions with smooth interpolation
+            crop_regions = compute_dynamic_crop_regions(
+                detections, src_w, src_h,
+                target_aspect=target_aspect,
+                segment_duration=1.0,  # 1-second segments for smooth tracking
+                smoothing_window=5,
+            )
+
+            if not crop_regions:
+                raise RuntimeError(
+                    f"Clip #{clip.get('rank')}: Could not compute dynamic crop regions from detected persons "
+                    f"for {_effective_crop_target} crop."
+                )
+
+            log("DEBUG", f"Clip #{clip.get('rank')}: computed {len(crop_regions)} dynamic crop regions")
+
+            # Build dynamic crop filter with zoompan for smooth transitions
+            crop_filter = build_dynamic_crop_filter(
+                crop_regions, src_w, src_h,
+                target_w, target_h,
+            )
+            out_w, out_h = target_w, target_h
 
     # ── 1. Silence removal ───────────────────────────────────────────────────
     silence_filter_v = None

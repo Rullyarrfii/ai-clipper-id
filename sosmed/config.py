@@ -89,8 +89,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "subtitles_enabled": True,
         "subtitle_position": "lower",
         "subtitle_margin_pct": 25.0,  # 25% from bottom for "lower" position
-        "crop_enabled": False,
-        "crop_target": "vertical",
         "music_enabled": False,
         "music_dir": "music",
         "music_volume": 0.06,

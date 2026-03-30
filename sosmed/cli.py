@@ -21,7 +21,7 @@ from .utils import (
     MAX_CLIPS_HARD_LIMIT, tighten_clip_boundaries,
     save_clips_to_disk, load_clips_with_internal_fields
 )
-from .config import get_defaults, load_config
+from .config import get_defaults, load_config, get_cta_settings
 
 
 def _get_transcript_cache_path(video_path: str) -> Path:
@@ -229,6 +229,13 @@ def main() -> None:
     ap.add_argument("--max-silence", type=float, default=defaults["max_silence_duration"],
                     help=f"Maximum silence gap in seconds before removal (default: {defaults['max_silence_duration']})")
 
+    # ── Instagram CTA ────────────────────────────────────────────────────
+    _cta_defaults = get_cta_settings()
+    ap.add_argument("--cta", action=argparse.BooleanOptionalAction,
+                    default=_cta_defaults.get("enabled", False),
+                    help="Append Instagram follow CTA at the end of each clip "
+                         f"(default: {'on' if _cta_defaults.get('enabled') else 'off'})")
+
     # ── Testing options ──────────────────────────────────────────────────
     ap.add_argument("--example", action="store_true",
                     help="Load example clips from file (skip transcription/LLM)")
@@ -271,6 +278,7 @@ def main() -> None:
         if args.crop: pp_features.append(f"Crop({args.crop_target})")
         if args.music: pp_features.append("Music")
         if args.remove_silence: pp_features.append("Silence-Rm")
+        if args.cta: pp_features.append("Instagram-CTA")
         print(f"  Features  : {', '.join(pp_features) or 'Raw clips only'}")
         print()
 
@@ -329,7 +337,8 @@ def main() -> None:
         music_entries = _prepare_music(clips, args)
 
         # Post-process
-        any_postprocess = args.subtitles or args.orientation != "auto" or args.crop or args.music or args.remove_silence
+        _cta_cfg = {**_cta_defaults, "enabled": args.cta}
+        any_postprocess = args.subtitles or args.orientation != "auto" or args.crop or args.music or args.remove_silence or args.cta
         if any_postprocess and raw_outputs:
             outputs = postprocess_clips(
                 raw_outputs,
@@ -346,6 +355,7 @@ def main() -> None:
                 music_volume=args.music_volume,
                 enable_silence_removal=args.remove_silence,
                 max_silence=args.max_silence,
+                cta_config=_cta_cfg,
             )
         else:
             outputs = raw_outputs
@@ -545,7 +555,8 @@ def main() -> None:
     music_entries = _prepare_music(clips, args)
 
     # ── 6. Post-process ──────────────────────────────────────────────────────
-    any_postprocess = args.subtitles or args.orientation != "auto" or args.crop or args.music or args.remove_silence
+    _cta_cfg = {**_cta_defaults, "enabled": args.cta}
+    any_postprocess = args.subtitles or args.orientation != "auto" or args.crop or args.music or args.remove_silence or args.cta
     if any_postprocess and raw_outputs:
         outputs = postprocess_clips(
             raw_outputs,
@@ -562,6 +573,7 @@ def main() -> None:
             music_volume=args.music_volume,
             enable_silence_removal=args.remove_silence,
             max_silence=args.max_silence,
+            cta_config=_cta_cfg,
         )
     else:
         outputs = raw_outputs

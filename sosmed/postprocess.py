@@ -132,6 +132,7 @@ def _postprocess_one(
     music_volume: float = 0.06,
     enable_silence_removal: bool = False,
     max_silence: float = 1.5,
+    cta_config: dict[str, Any] | None = None,
 ) -> str:
     """Post-process a single clip with all enhancements.
 
@@ -408,6 +409,18 @@ def _postprocess_one(
         log("DEBUG", f"ffmpeg cmd: {' '.join(full_cmd)}")
         raise RuntimeError(f"Post-processing failed for clip #{clip.get('rank', '?')}: {error_detail}")
 
+    # ── Instagram CTA ─────────────────────────────────────────────────────────
+    if cta_config and cta_config.get("enabled"):
+        from .cta import append_instagram_cta
+        append_instagram_cta(
+            str(out_path),
+            str(out_path),
+            name=str(cta_config.get("name", "Samuel Academy")),
+            username=str(cta_config.get("username", "@samuelkoesnadi")),
+            duration=float(cta_config.get("duration", 3.0)),
+            fade_duration=float(cta_config.get("fade_duration", 0.5)),
+        )
+
     # ── Cleanup ──────────────────────────────────────────────────────────────
     if ass_path:
         try:
@@ -448,6 +461,7 @@ def postprocess_clips(
     music_volume: float = 0.06,
     enable_silence_removal: bool = False,
     max_silence: float = 1.5,
+    cta_config: dict[str, Any] | None = None,
 ) -> list[str]:
     """Post-process all extracted clips.
 
@@ -470,6 +484,11 @@ def postprocess_clips(
     if not raw_clip_paths:
         return []
 
+    # Load CTA config from config.yaml if not explicitly provided
+    if cta_config is None:
+        from .config import get_cta_settings
+        cta_config = get_cta_settings()
+
     features = []
     if subtitles:
         features.append("subtitles")
@@ -479,6 +498,8 @@ def postprocess_clips(
         features.append("music")
     if enable_silence_removal:
         features.append("silence-removal")
+    if cta_config and cta_config.get("enabled"):
+        features.append("instagram-cta")
     log("INFO", f"Post-processing {len(raw_clip_paths)} clips: "
                 f"{', '.join(features) or 'none'}")
 
@@ -519,6 +540,7 @@ def postprocess_clips(
                 music_volume=music_volume,
                 enable_silence_removal=enable_silence_removal,
                 max_silence=max_silence,
+                cta_config=cta_config,
             )
             futures[fut] = clip
 

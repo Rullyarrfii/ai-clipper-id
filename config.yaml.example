@@ -113,6 +113,20 @@ defaults:
   silence_removal_enabled: true
   max_silence_duration: 1.5  # seconds
 
+# ── Instagram CTA ─────────────────────────────────────────────────────────
+# When enabled, each clip ends with a fade-to-black "Follow us on Instagram"
+# screen — animated account name, username, and a "Follow" button with a
+# click sound effect.
+#
+# Set enabled: true to activate. All other fields are required when enabled.
+
+cta:
+  enabled: false
+  name: "Samuel Academy"          # Display name shown on the CTA screen
+  username: "@samuelkoesnadi"     # Instagram handle (@ prefix optional)
+  duration: 3.0                   # Duration of the CTA screen in seconds
+  fade_duration: 0.5              # Cross-fade length from clip to CTA (seconds)
+
 # ── Pixabay Music Download Settings ───────────────────────────────────────
 # Used when auto-downloading music library
 

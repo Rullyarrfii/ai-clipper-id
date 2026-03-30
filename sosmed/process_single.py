@@ -1,7 +1,9 @@
 """
-Process a single video to extract the best clip with overlay subtitles.
+Process a single video (or a folder of videos) to extract the best clip with overlay subtitles.
 Output: topic and title printed to console.
-Usage: python sosmed/process_single.py path/to/video.mp4 [options]
+Usage:
+  python sosmed/process_single.py path/to/video.mp4 [options]
+  python sosmed/process_single.py path/to/folder/  [options]   # batch mode
 """
 
 import argparse
@@ -16,11 +18,13 @@ from .prefilter import prefilter_segments
 from .llm import generate_single_clip_metadata, translate_subtitle_words
 from .extraction import extract_clips, _get_video_duration
 from .postprocess import postprocess_clips
-from .config import get_defaults
+from .config import get_defaults, get_cta_settings
 from .utils import (
-    log, BOLD, RESET, CYAN, GREEN,
+    log, BOLD, RESET, CYAN, GREEN, YELLOW,
     strip_internal_fields, get_internal_fields, get_clips_cache_dir
 )
+
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".m4v"}
 
 
 def _get_transcript_cache_path(video_path: str) -> Path:
@@ -98,12 +102,13 @@ def process_single_video(
     subtitle_margin_pct: float | None = None,
     title: str | None = None,
     caption: str | None = None,
+    cta: bool | None = None,
 ) -> dict:
     """
     Process a single video and extract the best clip.
-    
+
     Returns:
-        dict with keys: 'topic', 'title', 'video_path', 'start', 'end'
+        dict with keys: 'topic', 'title', 'video_path', 'start', 'end', 'clip' (full clip dict)
     """
     video = Path(video_path)
     if not video.exists():
@@ -111,7 +116,7 @@ def process_single_video(
         sys.exit(1)
 
     output_path = Path(output_dir) / video.stem
-    
+
     print(f"\n{BOLD}{CYAN}{'═' * 50}")
     print(f"   Single Video Processor")
     print(f"{'═' * 50}{RESET}")
@@ -222,16 +227,20 @@ def process_single_video(
         sys.exit(1)
 
     # ── 5. Post-process with subtitles ──────────────────────────────────
-    if subtitles and raw_outputs:
+    cta_defaults = get_cta_settings()
+    cta_cfg = {**cta_defaults, "enabled": cta if cta is not None else cta_defaults.get("enabled", False)}
+
+    if (subtitles or cta_cfg["enabled"]) and raw_outputs:
         log("INFO", "Adding subtitles overlay...")
         outputs = postprocess_clips(
             raw_outputs,
             [best_clip],
             segments,
             output_dir=output_path,
-            subtitles=True,
+            subtitles=subtitles,
             subtitle_position=subtitle_position,
             subtitle_margin_pct=subtitle_margin_pct,
+            cta_config=cta_cfg,
         )
     else:
         outputs = raw_outputs
@@ -247,37 +256,111 @@ def process_single_video(
         print(f"{BOLD}Topic:{RESET} {best_clip.get('topic', 'N/A')}")
         print(f"{BOLD}Title:{RESET} {best_clip.get('title', 'N/A')}")
         print(f"{BOLD}Caption:{RESET} {best_clip.get('caption', 'N/A')}")
-        
+
         # Save clip JSONs (public to disk, internal to .cache)
         # Best clip
         best_clip_public = strip_internal_fields([best_clip])[0]
         best_clip_path = output_path / "best_clip.json"
         best_clip_path.write_text(json.dumps(best_clip_public, indent=2, ensure_ascii=False))
         log("OK", f"Saved best clip → {best_clip_path}")
-        
+
         # Save internal fields to cache
         internal = get_internal_fields([best_clip])
         if internal:
             cache_dir = get_clips_cache_dir(output_path)
             cache_file = cache_dir / "clips_internal.json"
             cache_file.write_text(json.dumps(internal, indent=2, ensure_ascii=False))
-        
+
         # Save all clips for reference
         all_clips_public = strip_internal_fields(clips)
         all_clips_path = output_path / "all_clips.json"
         all_clips_path.write_text(json.dumps(all_clips_public, indent=2, ensure_ascii=False))
         log("OK", f"Saved all {len(clips)} clips → {all_clips_path}")
-        
+
+        best_clip_public["video_path"] = str(outputs[0])
         return {
             "topic": best_clip.get("topic", ""),
             "title": best_clip.get("title", ""),
             "video_path": str(outputs[0]),
             "start": best_clip["start"],
             "end": best_clip["end"],
+            "clip": best_clip_public,
         }
     else:
         log("ERROR", "No output generated")
         sys.exit(1)
+
+
+def process_folder(
+    folder_path: str,
+    output_dir: str = "output",
+    **kwargs,
+) -> list[dict]:
+    """
+    Process all video files in a folder using process_single_video.
+
+    Returns:
+        list of result dicts from each processed video (same shape as process_single_video)
+        Also writes a combined all_clips.json to the output_dir root.
+    """
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        log("ERROR", f"Not a directory: {folder}")
+        sys.exit(1)
+
+    video_files = sorted(
+        f for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+    )
+
+    if not video_files:
+        log("ERROR", f"No video files found in {folder} (looked for {', '.join(VIDEO_EXTENSIONS)})")
+        sys.exit(1)
+
+    total = len(video_files)
+    print(f"\n{BOLD}{CYAN}{'═' * 50}")
+    print(f"   Batch Processor  ({total} video{'s' if total != 1 else ''})")
+    print(f"{'═' * 50}{RESET}")
+    for i, vf in enumerate(video_files, 1):
+        print(f"  [{i}/{total}] {vf.name}")
+    print()
+
+    results: list[dict] = []
+    all_clips: list[dict] = []
+    failed: list[str] = []
+
+    for idx, video_file in enumerate(video_files, 1):
+        print(f"\n{BOLD}{YELLOW}── [{idx}/{total}] Processing: {video_file.name} ──{RESET}")
+        try:
+            result = process_single_video(
+                video_path=str(video_file),
+                output_dir=output_dir,
+                **kwargs,
+            )
+            results.append(result)
+            clip_entry = dict(result.get("clip") or {})
+            clip_entry["source_video"] = video_file.name
+            all_clips.append(clip_entry)
+        except SystemExit:
+            log("ERROR", f"Failed to process {video_file.name}, skipping")
+            failed.append(video_file.name)
+
+    # Write combined all_clips.json to output root
+    out_root = Path(output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+    combined_path = out_root / "all_clips.json"
+    combined_path.write_text(json.dumps(all_clips, indent=2, ensure_ascii=False))
+
+    print(f"\n{BOLD}{GREEN}{'═' * 50}")
+    print(f"   Batch Complete")
+    print(f"{'═' * 50}{RESET}")
+    print(f"  Processed : {len(results)}/{total}")
+    if failed:
+        print(f"  Failed    : {', '.join(failed)}")
+    print(f"  All clips : {combined_path}")
+    print()
+
+    return results
 
 
 def main() -> None:
@@ -285,9 +368,9 @@ def main() -> None:
     defaults = get_defaults()
 
     ap = argparse.ArgumentParser(
-        description="Process a single video and extract the best clip with overlay subtitles.",
+        description="Process a single video (or folder of videos) and extract the best clip with overlay subtitles.",
     )
-    ap.add_argument("video", help="Path to input video")
+    ap.add_argument("video", help="Path to input video file or folder (folder = batch mode)")
     ap.add_argument("--model", default=defaults.get("whisper_model", "turbo"),
                     choices=["tiny", "base", "small", "medium",
                              "large-v2", "large-v3", "distil-large-v3", "turbo"],
@@ -334,15 +417,19 @@ def main() -> None:
                     default=defaults.get("subtitle_margin_pct"),
                     help="Subtitle margin from bottom for 'lower' position in %% (default: from config or 25)")
     ap.add_argument("--title", default=None,
-                    help="Manually set the title (overrides auto-generated title)")
+                    help="Manually set the title (overrides auto-generated title; single-file mode only)")
     ap.add_argument("--caption", default=None,
-                    help="Manually set the caption (overrides auto-generated caption)")
+                    help="Manually set the caption (overrides auto-generated caption; single-file mode only)")
+    _cta_defaults = get_cta_settings()
+    ap.add_argument("--cta", action=argparse.BooleanOptionalAction,
+                    default=_cta_defaults.get("enabled", False),
+                    help="Append Instagram follow CTA at the end "
+                         f"(default: {'on' if _cta_defaults.get('enabled') else 'off'})")
 
     args = ap.parse_args()
     lang = None if args.lang.lower() == "none" else args.lang
 
-    process_single_video(
-        video_path=args.video,
+    shared_kwargs = dict(
         model=args.model,
         lang=lang,
         device=args.device,
@@ -361,9 +448,19 @@ def main() -> None:
         subtitles=args.subtitles,
         subtitle_position=args.subtitle_position,
         subtitle_margin_pct=args.subtitle_margin,
-        title=args.title,
-        caption=args.caption,
+        cta=args.cta,
     )
+
+    input_path = Path(args.video)
+    if input_path.is_dir():
+        process_folder(str(input_path), **shared_kwargs)
+    else:
+        process_single_video(
+            video_path=args.video,
+            title=args.title,
+            caption=args.caption,
+            **shared_kwargs,
+        )
 
 
 if __name__ == "__main__":

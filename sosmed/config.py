@@ -101,6 +101,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_duration": 30,
         "per_page": 5,
     },
+    "cta": {
+        "enabled": False,
+        "name": "Samuel Academy",
+        "username": "@samuelkoesnadi",
+        "duration": 3.0,
+        "fade_duration": 0.5,
+    },
 }
 
 _config_cache: dict[str, Any] | None = None
@@ -188,6 +195,12 @@ def get_pixabay_settings() -> dict[str, Any]:
     """Get Pixabay download settings."""
     config = load_config()
     return config.get("pixabay", DEFAULT_CONFIG["pixabay"])
+
+
+def get_cta_settings() -> dict[str, Any]:
+    """Get Instagram CTA settings."""
+    config = load_config()
+    return config.get("cta", DEFAULT_CONFIG["cta"])
 
 
 def reload_config() -> dict[str, Any]:

@@ -1581,6 +1581,30 @@ def main(test_file: str | None = None,
         stars = "★" * (4 - tier)
         log.info(f"  {t:<8}  {stars:<8}  {label}")
 
+    # Refresh and log today's active schedule
+    reset_daily_counts_if_needed()
+    refresh_active_slots()
+    
+    today = datetime.now(pytz.timezone("Asia/Jakarta")).date()
+    today_name = today.strftime("%A")
+    engagement = DAY_ENGAGEMENT.get(today_name, 1.0)
+    
+    log.info(f"\n📅 Today's Schedule ({today_name}, {today})")
+    log.info(f"   Engagement multiplier: {engagement:.2f}")
+    log.info(f"   Daily upload target: {_daily_target}/platform")
+    log.info(f"   Active slots: {len(_active_slots)}")
+    
+    if _active_slots:
+        # Build a lookup for slot details
+        slot_lookup = {t: (tier, label) for t, tier, label in SCHEDULE_SLOTS}
+        log.info(f"\n   🕐 Today's active posting times:")
+        for slot_time in sorted(_active_slots):
+            tier, label = slot_lookup.get(slot_time, ("?", "Unknown"))
+            stars = "★" * (4 - tier)
+            log.info(f"      • {slot_time} ({stars}) - {label}")
+    else:
+        log.info("   🚫 No active slots today (rest day)")
+
     log.info(f"\n📋 {len(clips)} clips in queue at startup")
     log.info("   (clips.json is re-read fresh before every upload)")
     log.info("")

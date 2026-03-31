@@ -381,11 +381,11 @@ def _postprocess_one(
     if silence_filter_a:
         afilters.append(silence_filter_a)
 
-    # Audio loudnorm - aggressive normalization for social media (-9 LUFS)
-    # Add 2dB pre-amp for quiet sources, then normalize
+    # Audio loudnorm - aggressive normalization for social media (-7 LUFS, 1.5x louder)
+    # Add 5.5dB pre-amp for quiet sources, then normalize
     if has_audio:
-        afilters.append("volume=2dB")
-        afilters.append("loudnorm=I=-9:LRA=7:TP=-1")
+        afilters.append("volume=5.5dB")
+        afilters.append("loudnorm=I=-7:LRA=7:TP=-1")
 
     if has_audio and afilters:
         afilter_str = ",".join(afilters)

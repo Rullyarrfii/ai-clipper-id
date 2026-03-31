@@ -75,6 +75,23 @@ _weekly_start_date = None
 # = one cross-platform post.
 _daily_target: int = 1  # will be overwritten on first reset
 
+
+def _get_daily_seed(date: datetime.date) -> int:
+    """Generate a deterministic seed for a given date.
+    
+    This ensures that the same schedule is generated for the same date,
+    even if the server crashes and restarts mid-day.
+    
+    Args:
+        date: The date to generate seed for
+        
+    Returns:
+        An integer seed based on the date string (YYYY-MM-DD)
+    """
+    date_str = date.strftime("%Y-%m-%d")
+    # Convert date string to a numeric seed
+    return int(date_str.replace("-", ""))
+
 # Track daily upload counts (reset at midnight WIB)
 _daily_counts = {
     "youtube": 0,
@@ -121,26 +138,31 @@ def _inter_platform_delay() -> None:
 
 def reset_daily_counts_if_needed():
     """Reset upload counters and draw today's target from the weekly pattern.
-    
+
     The weekly pattern is shuffled once per week (Monday start) to ensure:
       • Exactly 1 rest day per week
       • 5 days at 1 post/day
       • 1 day at 2 posts/day
+    
+    All randomization is seeded by date to ensure deterministic schedules
+    that survive server crashes and restarts.
     """
     global _daily_target, _weekly_shuffle, _weekly_start_date
-    
+
     today = datetime.now(pytz.timezone("Asia/Jakarta")).date()
-    
+
     # Calculate week start (Monday)
     week_start = today - timedelta(days=today.weekday())
-    
+
     # Regenerate shuffle at start of each week
     if _weekly_start_date != week_start:
         _weekly_shuffle = _WEEKLY_PATTERN.copy()
+        # Use week-start seed for reproducible weekly shuffle
+        random.seed(_get_daily_seed(week_start))
         random.shuffle(_weekly_shuffle)
         _weekly_start_date = week_start
         log.info(f"🔄 Weekly pattern shuffled for week starting {week_start}: {_weekly_shuffle}")
-    
+
     # Get today's position in the week (0=Monday, 6=Sunday)
     day_of_week = today.weekday()
     scheduled_value = _weekly_shuffle[day_of_week]
@@ -149,6 +171,8 @@ def reset_daily_counts_if_needed():
     if scheduled_value == 0:
         today_target = 0
     else:
+        # Use date seed for reproducible daily target selection
+        random.seed(_get_daily_seed(today))
         today_target = random.choice(DAILY_ACTIVE_POSTS)
 
     # Reset daily counts at midnight and set the target once per day
@@ -303,6 +327,9 @@ def refresh_active_slots():
     Within each tier the order is shuffled so the specific times chosen
     vary day-to-day, preserving organic-looking behaviour.
     Called once per day (or on first run).
+    
+    Uses date-based seeding for deterministic slot selection that survives
+    server crashes and restarts.
     """
     global _active_slots, _active_slots_date
     today = datetime.now(pytz.timezone("Asia/Jakarta")).date()
@@ -320,6 +347,8 @@ def refresh_active_slots():
     # Fill slots in tier order until the daily target is reached
     selected: list[str] = []
     remaining = _daily_target
+    # Use date seed for reproducible slot shuffling (set once before the loop)
+    random.seed(_get_daily_seed(today))
     for tier in sorted(by_tier.keys()):
         tier_slots = by_tier[tier][:]
         random.shuffle(tier_slots)

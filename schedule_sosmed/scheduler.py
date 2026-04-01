@@ -1616,8 +1616,47 @@ def main(test_file: str | None = None,
         schedule.every().day.at(slot_time, "Asia/Jakarta").do(job_fn)
 
     log.info("🚀 Running — Ctrl+C to stop.\n")
+
+    # Track last logged date for midnight crossing detection
+    last_logged_date = datetime.now(pytz.timezone("Asia/Jakarta")).date()
+
     while True:
         schedule.run_pending()
+
+        # Check if we've crossed midnight
+        current_date = datetime.now(pytz.timezone("Asia/Jakarta")).date()
+        if current_date != last_logged_date:
+            log.info("\n" + "="*60)
+            log.info("🌙 Midnight passed — new day detected!")
+            log.info("="*60)
+
+            # Refresh and log the new day's schedule
+            reset_daily_counts_if_needed()
+            refresh_active_slots()
+
+            today_name = current_date.strftime("%A")
+            engagement = DAY_ENGAGEMENT.get(today_name, 1.0)
+
+            log.info(f"\n📅 Today's Schedule ({today_name}, {current_date})")
+            log.info(f"   Engagement multiplier: {engagement:.2f}")
+            log.info(f"   Daily upload target: {_daily_target}/platform")
+            log.info(f"   Active slots: {len(_active_slots)}")
+
+            if _active_slots:
+                slot_lookup = {t: (tier, label) for t, tier, label in SCHEDULE_SLOTS}
+                log.info(f"\n   🕐 Today's active posting times:")
+                for slot_time in sorted(_active_slots):
+                    tier, label = slot_lookup.get(slot_time, ("?", "Unknown"))
+                    stars = "★" * (4 - tier)
+                    log.info(f"      • {slot_time} ({stars}) - {label}")
+            else:
+                log.info("   🚫 No active slots today (rest day)")
+
+            log.info(f"\n📋 {len(load_clips())} clips in queue")
+            log.info("="*60 + "\n")
+
+            last_logged_date = current_date
+
         time.sleep(30)
 
 
